@@ -1,1163 +1,755 @@
 import os
 import re
 import json
-import html
 import requests
-
-from datetime import datetime, timezone
-from urllib.parse import quote
-
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
 
-# =========================================================
-# CONFIGURAÇÕES
-# =========================================================
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
 
-TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
-SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
-SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
+
+SUPABASE_TABLE = "imoveis"
 
 
-SEARCHES = [
-    "apartamento venda Armação Penha SC",
-    "casa venda Armação Penha SC",
-    "terreno venda Armação Penha SC"
+# ============================================================
+# BUSCAS
+# ============================================================
+
+BUSCAS = [
+    ("Apartamento", 'apartamento venda "Armação" Penha SC', "zapimoveis.com.br"),
+    ("Apartamento", 'apartamento venda "Armação" Penha SC', "vivareal.com.br"),
+    ("Apartamento", 'apartamento venda "Armação" Penha SC', "olx.com.br"),
+    ("Apartamento", 'apartamento venda "Armação" Penha SC', "imovelweb.com.br"),
+
+    ("Casa", 'casa venda "Armação" Penha SC', "zapimoveis.com.br"),
+    ("Casa", 'casa venda "Armação" Penha SC', "vivareal.com.br"),
+    ("Casa", 'casa venda "Armação" Penha SC', "olx.com.br"),
+    ("Casa", 'casa venda "Armação" Penha SC', "imovelweb.com.br"),
+
+    ("Terreno", 'terreno lote venda "Armação" Penha SC', "zapimoveis.com.br"),
+    ("Terreno", 'terreno lote venda "Armação" Penha SC', "vivareal.com.br"),
+    ("Terreno", 'terreno lote venda "Armação" Penha SC', "olx.com.br"),
+    ("Terreno", 'terreno lote venda "Armação" Penha SC', "imovelweb.com.br"),
 ]
 
 
-HEADERS_WEB = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/140.0 Safari/537.36"
-    )
-}
+# ============================================================
+# FUNÇÕES AUXILIARES
+# ============================================================
 
-
-HEADERS_SUPABASE = {
-    "apikey": SUPABASE_SECRET_KEY,
-    "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
-    "Content-Type": "application/json"
-}
-
-
-# =========================================================
-# TAVILY
-# =========================================================
-
-def pesquisar_tavily(query):
-
-    response = requests.post(
-        "https://api.tavily.com/search",
-        json={
-            "api_key": TAVILY_API_KEY,
-            "query": query,
-            "search_depth": "basic",
-            "max_results": 10,
-            "include_answer": False
-        },
-        timeout=60
-    )
-
-    response.raise_for_status()
-
-    return response.json().get("results", [])
-
-
-# =========================================================
-# LIMPAR TEXTO
-# =========================================================
-
-def limpar_texto(texto):
-
-    if not texto:
-        return ""
-
-    texto = html.unescape(str(texto))
-
-    texto = re.sub(
-        r"\s+",
-        " ",
-        texto
-    )
-
-    return texto.strip()
-
-
-# =========================================================
-# CONVERTER NÚMERO
-# =========================================================
-
-def converter_numero(valor):
-
+def normalizar_numero(valor):
     if valor is None:
         return None
 
-    if isinstance(valor, (int, float)):
+    try:
+        valor = str(valor)
+        valor = valor.replace("R$", "")
+        valor = valor.replace("m²", "")
+        valor = valor.replace("m2", "")
+        valor = valor.strip()
+
+        # 590.000,00
+        if "," in valor:
+            valor = valor.replace(".", "").replace(",", ".")
+        else:
+            # 590.000
+            if valor.count(".") == 1:
+                partes = valor.split(".")
+                if len(partes[1]) == 3:
+                    valor = valor.replace(".", "")
+
         return float(valor)
 
-    texto = str(valor).strip()
+    except:
+        return None
 
-    texto = texto.replace("R$", "")
-    texto = texto.replace("m²", "")
-    texto = texto.replace("m2", "")
-    texto = texto.strip()
 
+def extrair_preco(texto):
     if not texto:
         return None
 
-    try:
+    padroes = [
+        r'R\$\s*([\d\.]+(?:,\d{2})?)',
+        r'R\$\s*([\d\.]+)',
+    ]
 
-        if "," in texto:
+    for padrao in padroes:
+        m = re.search(padrao, texto, re.I)
+        if m:
+            valor = normalizar_numero(m.group(1))
 
-            texto = texto.replace(".", "")
-            texto = texto.replace(",", ".")
+            if valor and 20_000 <= valor <= 20_000_000:
+                return valor
 
-        elif "." in texto:
+    return None
 
-            partes = texto.split(".")
 
-            if len(partes[-1]) == 3:
-
-                texto = texto.replace(".", "")
-
-        return float(texto)
-
-    except Exception:
-
+def extrair_area(texto):
+    if not texto:
         return None
 
+    padroes = [
+        r'(\d+(?:[\.,]\d+)?)\s*m²',
+        r'(\d+(?:[\.,]\d+)?)\s*m2',
+        r'área.{0,20}?(\d+(?:[\.,]\d+)?)',
+    ]
 
-# =========================================================
-# ABRIR PÁGINA
-# =========================================================
+    for padrao in padroes:
+        m = re.search(padrao, texto, re.I)
 
-def abrir_pagina(url):
+        if m:
+            valor = normalizar_numero(m.group(1))
+
+            if valor and 10 <= valor <= 10_000:
+                return valor
+
+    return None
+
+
+def extrair_inteiro(texto, palavras):
+    if not texto:
+        return None
+
+    for palavra in palavras:
+
+        padroes = [
+            rf'(\d+)\s*{palavra}',
+            rf'{palavra}.{{0,15}}?(\d+)',
+        ]
+
+        for padrao in padroes:
+            m = re.search(padrao, texto, re.I)
+
+            if m:
+                valor = int(m.group(1))
+
+                if 0 <= valor <= 20:
+                    return valor
+
+    return None
+
+
+def extrair_quartos(texto):
+    return extrair_inteiro(
+        texto,
+        [
+            r'quartos?',
+            r'dormitórios?',
+            r'dorms?',
+        ]
+    )
+
+
+def extrair_banheiros(texto):
+    return extrair_inteiro(
+        texto,
+        [
+            r'banheiros?',
+            r'bwc',
+            r'suítes?',
+            r'suites?',
+        ]
+    )
+
+
+def extrair_garagens(texto):
+    return extrair_inteiro(
+        texto,
+        [
+            r'vagas?',
+            r'garagens?',
+        ]
+    )
+
+
+# ============================================================
+# FONTE
+# ============================================================
+
+def identificar_fonte(url):
+
+    dominio = urlparse(url).netloc.lower()
+
+    if "zapimoveis" in dominio:
+        return "ZAP Imóveis"
+
+    if "vivareal" in dominio:
+        return "Viva Real"
+
+    if "olx" in dominio:
+        return "OLX"
+
+    if "imovelweb" in dominio:
+        return "Imovelweb"
+
+    return dominio
+
+
+# ============================================================
+# TIPO
+# ============================================================
+
+def identificar_tipo(titulo, busca_tipo, texto=""):
+
+    titulo_lower = (titulo or "").lower()
+    texto_lower = (texto or "").lower()
+
+    # Primeiro respeitamos o tipo da busca,
+    # mas só se o título não contradizer.
+
+    if any(x in titulo_lower for x in [
+        "terreno",
+        "lote",
+        "lotes",
+    ]):
+        return "Terreno"
+
+    if any(x in titulo_lower for x in [
+        "apartamento",
+        "apto",
+        "cobertura",
+        "flat",
+    ]):
+        return "Apartamento"
+
+    if any(x in titulo_lower for x in [
+        "casa",
+        "sobrado",
+        "residência",
+        "residencia",
+    ]):
+        return "Casa"
+
+    # Se o título não informou claramente,
+    # usamos o tipo da busca.
+
+    if busca_tipo in ["Apartamento", "Casa", "Terreno"]:
+        return busca_tipo
+
+    return None
+
+
+# ============================================================
+# PÁGINA GENÉRICA
+# ============================================================
+
+def pagina_generica(titulo, url):
+
+    titulo = (titulo or "").strip().lower()
+    url_lower = (url or "").lower()
+
+    # Títulos claramente genéricos
+
+    padroes_titulo = [
+
+        r'^\d+\s+apartamentos?',
+        r'^\d+\s+casas?',
+        r'^\d+\s+terrenos?',
+        r'^\d+\s+lotes?',
+
+        r'^apartamentos?\s+(à|a)\s+venda',
+        r'^casas?\s+(à|a)\s+venda',
+        r'^terrenos?\s+(à|a)\s+venda',
+        r'^lotes?.*venda',
+
+        r'^apartamentos?\s+para\s+venda',
+        r'^casas?\s+para\s+venda',
+        r'^terrenos?\s+para\s+venda',
+
+        r'^apartamentos?\s+para\s+comprar',
+        r'^casas?\s+para\s+comprar',
+
+        r'imóveis?\s+à\s+venda',
+        r'imoveis\s+à\s+venda',
+        r'imóveis?\s+para\s+venda',
+        r'imoveis\s+para\s+venda',
+
+        r'^penha\s*-\s*sc$',
+
+        r'imóveis encontrados',
+        r'imoveis encontrados',
+
+        r'^página\s+\d+',
+        r'^pagina\s+\d+',
+
+        r'lotes/terrenos\s+para\s+venda',
+        r'terrenos,\s*lotes',
+
+        r'apartamentos\s+e\s+pousadas',
+    ]
+
+    for padrao in padroes_titulo:
+        if re.search(padrao, titulo):
+            return True
+
+    # Títulos com "X imóveis à venda"
+
+    if re.search(r'^\d+\s+.*à\s+venda', titulo):
+        return True
+
+    # URLs típicas de páginas de pesquisa
+
+    palavras_url = [
+        "/busca",
+        "/search",
+        "/imoveis-a-venda",
+        "/imoveis?",
+        "/apartamentos?",
+        "/casas?",
+        "/terrenos?",
+        "/lotes?",
+        "/venda?",
+    ]
+
+    for palavra in palavras_url:
+
+        if palavra in url_lower:
+
+            # Não rejeitamos automaticamente todos os casos,
+            # mas páginas claramente de categoria entram aqui.
+
+            if any(x in url_lower for x in [
+                "filtro",
+                "search",
+                "busca",
+                "result",
+                "pagina",
+                "page=",
+                "tipo=",
+            ]):
+                return True
+
+    return False
+
+
+# ============================================================
+# JSON-LD
+# ============================================================
+
+def extrair_jsonld(soup):
+
+    resultados = []
+
+    for script in soup.find_all(
+        "script",
+        type="application/ld+json"
+    ):
+
+        try:
+            conteudo = script.string
+
+            if not conteudo:
+                continue
+
+            dados = json.loads(conteudo)
+
+            if isinstance(dados, list):
+                resultados.extend(dados)
+
+            else:
+                resultados.append(dados)
+
+        except:
+            continue
+
+    return resultados
+
+
+def analisar_jsonld(jsonlds):
+
+    dados = {}
+
+    for item in jsonlds:
+
+        if not isinstance(item, dict):
+            continue
+
+        tipo = item.get("@type", "")
+
+        # Rejeita estruturas claramente de categoria
+
+        if tipo in [
+            "ItemList",
+            "CollectionPage",
+            "SearchResultsPage",
+        ]:
+            dados["generica"] = True
+            continue
+
+        nome = item.get("name")
+
+        if nome and not dados.get("titulo"):
+            dados["titulo"] = nome
+
+        offers = item.get("offers")
+
+        if isinstance(offers, dict):
+
+            preco = offers.get("price")
+
+            if preco:
+                dados["preco"] = normalizar_numero(preco)
+
+        elif isinstance(offers, list):
+
+            for offer in offers:
+
+                if isinstance(offer, dict):
+
+                    preco = offer.get("price")
+
+                    if preco:
+                        dados["preco"] = normalizar_numero(preco)
+                        break
+
+        # Algumas estruturas usam price diretamente
+
+        if item.get("price"):
+            dados["preco"] = normalizar_numero(item.get("price"))
+
+        # Área
+
+        if item.get("floorSize"):
+
+            fs = item["floorSize"]
+
+            if isinstance(fs, dict):
+                valor = fs.get("value")
+            else:
+                valor = fs
+
+            dados["area_m2"] = normalizar_numero(valor)
+
+        # Número de quartos
+
+        for campo in [
+            "numberOfBedrooms",
+            "numberOfRooms",
+        ]:
+
+            if item.get(campo) is not None:
+
+                try:
+                    dados["quartos"] = int(
+                        item.get(campo)
+                    )
+                except:
+                    pass
+
+        # Banheiros
+
+        if item.get("numberOfBathroomsTotal") is not None:
+
+            try:
+                dados["banheiros"] = int(
+                    item.get("numberOfBathroomsTotal")
+                )
+            except:
+                pass
+
+        # Garagens
+
+        if item.get("numberOfParkingSpaces") is not None:
+
+            try:
+                dados["garagens"] = int(
+                    item.get("numberOfParkingSpaces")
+                )
+            except:
+                pass
+
+        # Endereço
+
+        endereco = item.get("address")
+
+        if isinstance(endereco, dict):
+
+            partes = []
+
+            for campo in [
+                "streetAddress",
+                "addressLocality",
+                "addressRegion",
+            ]:
+
+                if endereco.get(campo):
+                    partes.append(
+                        str(endereco[campo])
+                    )
+
+            if partes:
+                dados["endereco"] = ", ".join(partes)
+
+    return dados
+
+
+# ============================================================
+# DOWNLOAD DA PÁGINA
+# ============================================================
+
+def baixar_pagina(url):
 
     try:
+
+        headers = {
+            "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/131.0 Safari/537.36"
+        }
 
         resposta = requests.get(
             url,
-            headers=HEADERS_WEB,
-            timeout=20
+            headers=headers,
+            timeout=20,
+            allow_redirects=True
         )
 
-        if resposta.status_code != 200:
+        if resposta.status_code >= 400:
 
             print(
                 f"    Página retornou HTTP "
                 f"{resposta.status_code}"
             )
 
-            return None
+            return None, None
 
         soup = BeautifulSoup(
             resposta.text,
             "html.parser"
         )
 
-        texto = limpar_texto(
-            soup.get_text(" ")
-        )
+        return soup, resposta.text
 
-        return soup, texto
-
-    except Exception as erro:
+    except Exception as e:
 
         print(
-            f"    Não foi possível abrir página: "
-            f"{erro}"
+            f"    Erro ao acessar página: {e}"
         )
 
-        return None
+        return None, None
 
 
-# =========================================================
-# JSON-LD
-# =========================================================
+# ============================================================
+# TAVILY
+# ============================================================
 
-def obter_json_ld(soup):
+def pesquisar_tavily(query, dominio):
 
-    resultados = []
+    try:
 
-    if not soup:
-        return resultados
-
-    scripts = soup.find_all(
-        "script",
-        type="application/ld+json"
-    )
-
-    for script in scripts:
-
-        try:
-
-            conteudo = (
-                script.string
-                or script.get_text()
-            )
-
-            if not conteudo:
-                continue
-
-            objeto = json.loads(
-                conteudo
-            )
-
-            if isinstance(objeto, list):
-
-                resultados.extend(
-                    objeto
-                )
-
-            elif isinstance(objeto, dict):
-
-                if "@graph" in objeto:
-
-                    grafico = objeto["@graph"]
-
-                    if isinstance(
-                        grafico,
-                        list
-                    ):
-
-                        resultados.extend(
-                            grafico
-                        )
-
-                else:
-
-                    resultados.append(
-                        objeto
-                    )
-
-        except Exception:
-
-            continue
-
-    return resultados
-
-
-def encontrar_dados_imovel(json_ld):
-
-    for item in json_ld:
-
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
-
-        tipo = item.get(
-            "@type",
-            ""
+        response = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "search_depth": "basic",
+                "max_results": 10,
+                "include_answer": False,
+                "include_domains": [dominio],
+            },
+            timeout=60
         )
 
-        if isinstance(
-            tipo,
-            list
-        ):
+        response.raise_for_status()
 
-            tipo = " ".join(tipo)
-
-        tipo = str(tipo).lower()
-
-        tipos_validos = [
-            "product",
-            "offer",
-            "realestate",
-            "residence",
-            "house",
-            "apartment",
-            "singlefamilyresidence"
-        ]
-
-        if any(
-            palavra in tipo
-            for palavra in tipos_validos
-        ):
-
-            return item
-
-    return None
-
-
-# =========================================================
-# IDENTIFICAR TIPO
-# =========================================================
-
-def identificar_tipo(
-    titulo,
-    texto,
-    url,
-    busca
-):
-
-    titulo_lower = limpar_texto(
-        titulo
-    ).lower()
-
-    url_lower = limpar_texto(
-        url
-    ).lower()
-
-    busca_lower = limpar_texto(
-        busca
-    ).lower()
-
-
-    # -----------------------------------------------------
-    # 1. TÍTULO
-    # -----------------------------------------------------
-
-    if any(
-        palavra in titulo_lower
-        for palavra in [
-            "terreno",
-            "lote",
-            "lotes"
-        ]
-    ):
-
-        return "Terreno"
-
-
-    if any(
-        palavra in titulo_lower
-        for palavra in [
-            "apartamento",
-            "apto",
-            "cobertura",
-            "flat"
-        ]
-    ):
-
-        return "Apartamento"
-
-
-    if any(
-        palavra in titulo_lower
-        for palavra in [
-            "casa",
-            "casas",
-            "sobrado",
-            "sobrados",
-            "residência"
-        ]
-    ):
-
-        return "Casa"
-
-
-    # -----------------------------------------------------
-    # 2. URL
-    # -----------------------------------------------------
-
-    if any(
-        palavra in url_lower
-        for palavra in [
-            "/terreno",
-            "/terrenos",
-            "/lote",
-            "/lotes"
-        ]
-    ):
-
-        return "Terreno"
-
-
-    if any(
-        palavra in url_lower
-        for palavra in [
-            "/apartamento",
-            "/apartamentos",
-            "/apto",
-            "/cobertura"
-        ]
-    ):
-
-        return "Apartamento"
-
-
-    if any(
-        palavra in url_lower
-        for palavra in [
-            "/casa",
-            "/casas",
-            "/sobrado",
-            "/sobrados"
-        ]
-    ):
-
-        return "Casa"
-
-
-    # -----------------------------------------------------
-    # 3. CONSULTA TAVILY
-    # -----------------------------------------------------
-
-    if (
-        "terreno" in busca_lower
-        or "lote" in busca_lower
-    ):
-
-        return "Terreno"
-
-
-    if "apartamento" in busca_lower:
-
-        return "Apartamento"
-
-
-    if "casa" in busca_lower:
-
-        return "Casa"
-
-
-    # -----------------------------------------------------
-    # 4. TEXTO - ÚLTIMO RECURSO
-    # -----------------------------------------------------
-
-    texto_lower = texto.lower()
-
-
-    if (
-        "terreno" in texto_lower
-        or "lote" in texto_lower
-    ):
-
-        return "Terreno"
-
-
-    if "apartamento" in texto_lower:
-
-        return "Apartamento"
-
-
-    if "casa" in texto_lower:
-
-        return "Casa"
-
-
-    return None
-
-
-# =========================================================
-# PREÇO
-# =========================================================
-
-def extrair_preco_json(item):
-
-    if not item:
-        return None
-
-    ofertas = item.get(
-        "offers"
-    )
-
-    if isinstance(
-        ofertas,
-        list
-    ):
-
-        ofertas = (
-            ofertas[0]
-            if ofertas
-            else None
+        return response.json().get(
+            "results",
+            []
         )
 
+    except Exception as e:
 
-    if isinstance(
-        ofertas,
-        dict
-    ):
-
-        valor = converter_numero(
-            ofertas.get("price")
+        print(
+            f"Erro Tavily: {e}"
         )
 
-        if valor and (
-            30000 <= valor <= 50000000
-        ):
+        return []
 
-            return valor
 
+# ============================================================
+# VALIDAÇÃO
+# ============================================================
 
-    valor = converter_numero(
-        item.get("price")
-    )
+def validar_dados(dados, tipo):
 
-    if valor and (
-        30000 <= valor <= 50000000
-    ):
+    preco = dados.get("preco")
+    area = dados.get("area_m2")
+    quartos = dados.get("quartos")
+    banheiros = dados.get("banheiros")
+    garagens = dados.get("garagens")
 
-        return valor
-
-
-    return None
-
-
-def extrair_preco_texto(texto):
-
-    padroes = [
-
-        r"R\$\s*([\d\.]+(?:,\d{1,2})?)",
-
-        r"R\$\s*([\d]+(?:[.,]\d+)?)\s*mil"
-
-    ]
-
-
-    for padrao in padroes:
-
-        encontrado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-        if not encontrado:
-            continue
-
-
-        valor = converter_numero(
-            encontrado.group(1)
-        )
-
-
-        if (
-            "mil"
-            in encontrado.group(0).lower()
-        ):
-
-            if valor:
-                valor *= 1000
-
-
-        if valor and (
-            30000 <= valor <= 50000000
-        ):
-
-            return valor
-
-
-    return None
-
-
-# =========================================================
-# ÁREA
-# =========================================================
-
-def extrair_area_json(item):
-
-    if not item:
-        return None
-
-
-    for campo in [
-        "floorSize",
-        "floorArea",
-        "area",
-        "size"
-    ]:
-
-        valor = item.get(
-            campo
-        )
-
-
-        if isinstance(
-            valor,
-            dict
-        ):
-
-            valor = (
-                valor.get("value")
-                or valor.get("maxValue")
-            )
-
-
-        valor = converter_numero(
-            valor
-        )
-
-
-        if valor and (
-            15 <= valor <= 5000
-        ):
-
-            return valor
-
-
-    return None
-
-
-def extrair_area_texto(texto):
-
-    padroes = [
-
-        r"(\d+(?:[.,]\d+)?)\s*m²",
-
-        r"(\d+(?:[.,]\d+)?)\s*m2"
-
-    ]
-
-
-    for padrao in padroes:
-
-        encontrado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-
-        if encontrado:
-
-            valor = converter_numero(
-                encontrado.group(1)
-            )
-
-
-            if valor and (
-                15 <= valor <= 5000
-            ):
-
-                return valor
-
-
-    return None
-
-
-# =========================================================
-# QUARTOS
-# =========================================================
-
-def extrair_quartos_json(item):
-
-    if not item:
-        return None
-
-
-    for campo in [
-        "numberOfBedrooms",
-        "numberOfRooms",
-        "bedrooms"
-    ]:
-
-        valor = converter_numero(
-            item.get(campo)
-        )
-
-
-        if valor and (
-            1 <= valor <= 20
-        ):
-
-            return int(valor)
-
-
-    return None
-
-
-def extrair_quartos_texto(texto):
-
-    padroes = [
-
-        r"(\d+)\s+quartos?",
-
-        r"(\d+)\s+dormitórios?",
-
-        r"(\d+)\s+dorms?"
-
-    ]
-
-
-    for padrao in padroes:
-
-        encontrado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-
-        if encontrado:
-
-            valor = int(
-                encontrado.group(1)
-            )
-
-
-            if 1 <= valor <= 20:
-
-                return valor
-
-
-    return None
-
-
-# =========================================================
-# BANHEIROS
-# =========================================================
-
-def extrair_banheiros_json(item):
-
-    if not item:
-        return None
-
-
-    for campo in [
-        "numberOfBathrooms",
-        "numberOfFullBathrooms",
-        "bathrooms"
-    ]:
-
-        valor = converter_numero(
-            item.get(campo)
-        )
-
-
-        if valor and (
-            1 <= valor <= 20
-        ):
-
-            return int(valor)
-
-
-    return None
-
-
-def extrair_banheiros_texto(texto):
-
-    padroes = [
-
-        r"(\d+)\s+banheiros?",
-
-        r"(\d+)\s+bwc",
-
-        r"(\d+)\s+wc"
-
-    ]
-
-
-    for padrao in padroes:
-
-        encontrado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-
-        if encontrado:
-
-            valor = int(
-                encontrado.group(1)
-            )
-
-
-            if 1 <= valor <= 20:
-
-                return valor
-
-
-    return None
-
-
-# =========================================================
-# GARAGENS
-# =========================================================
-
-def extrair_garagens_json(item):
-
-    if not item:
-        return None
-
-
-    for campo in [
-        "numberOfParkingSpaces",
-        "parkingSpaces"
-    ]:
-
-        valor = item.get(
-            campo
-        )
-
-
-        if isinstance(
-            valor,
-            dict
-        ):
-
-            valor = (
-                valor.get("value")
-                or valor.get("number")
-            )
-
-
-        valor = converter_numero(
-            valor
-        )
-
-
-        if valor and (
-            1 <= valor <= 20
-        ):
-
-            return int(valor)
-
-
-    return None
-
-
-def extrair_garagens_texto(texto):
-
-    padroes = [
-
-        r"(\d+)\s+vagas?",
-
-        r"(\d+)\s+garagens?",
-
-        r"(\d+)\s+vaga de garagem"
-
-    ]
-
-
-    for padrao in padroes:
-
-        encontrado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-
-        if encontrado:
-
-            valor = int(
-                encontrado.group(1)
-            )
-
-
-            if 1 <= valor <= 20:
-
-                return valor
-
-
-    return None
-
-
-# =========================================================
-# PÁGINA GENÉRICA
-# =========================================================
-
-def pagina_generica(
-    titulo,
-    url
-):
-
-    titulo_lower = limpar_texto(
-        titulo
-    ).lower()
-
-    url_lower = limpar_texto(
-        url
-    ).lower()
-
-
-    # Redes sociais
-
-    redes = [
-        "instagram.com",
-        "facebook.com",
-        "youtube.com",
-        "tiktok.com"
-    ]
-
-
-    if any(
-        rede in url_lower
-        for rede in redes
-    ):
-
-        return True
-
-
-    # Páginas de busca/listagem
-
-    padroes = [
-
-        r"^\d+\s+imóveis?",
-
-        r"^\d+\s+casas?",
-
-        r"^\d+\s+apartamentos?",
-
-        r"^\d+\s+terrenos?",
-
-        r"^\d+\s+lotes?",
-
-        r"imóveis para venda",
-
-        r"imóveis à venda",
-
-        r"casas à venda",
-
-        r"apartamentos à venda",
-
-        r"terrenos à venda",
-
-        r"lotes à venda",
-
-        r"página\s+\d+",
-
-        r"imóveis encontrados",
-
-        r"apartamentos e pousadas à venda",
-
-        r"lotes e terrenos para venda",
-
-        r"terrenos, lotes e condomínios"
-
-    ]
-
-
-    for padrao in padroes:
-
-        if re.search(
-            padrao,
-            titulo_lower
-        ):
-
-            return True
-
-
-    return False
-
-
-# =========================================================
-# VALIDAR DADOS
-# =========================================================
-
-def validar_dados(
-    tipo,
-    preco,
-    area,
-    quartos,
-    banheiros,
-    garagens
-):
-
-    # -----------------------------------------------------
-    # TERRENO
-    # -----------------------------------------------------
+    # Terreno não deve ter quartos/banheiros/vagas
 
     if tipo == "Terreno":
 
-        quartos = None
-        banheiros = None
-        garagens = None
+        dados["quartos"] = None
+        dados["banheiros"] = None
+        dados["garagens"] = None
+
+    # Área absurda para apartamento/casa
+
+    if tipo in ["Apartamento", "Casa"]:
+
+        if area and area > 1500:
+            dados["area_m2"] = None
+
+    # Números absurdos
+
+    if quartos is not None:
+        if quartos < 0 or quartos > 15:
+            dados["quartos"] = None
+
+    if banheiros is not None:
+        if banheiros < 0 or banheiros > 20:
+            dados["banheiros"] = None
+
+    if garagens is not None:
+        if garagens < 0 or garagens > 20:
+            dados["garagens"] = None
+
+    if preco is not None:
+
+        if preco < 20_000 or preco > 20_000_000:
+            dados["preco"] = None
+
+    if area is not None:
+
+        if area < 10 or area > 10_000:
+            dados["area_m2"] = None
+
+    return dados
 
 
-    # -----------------------------------------------------
-    # ÁREA
-    # -----------------------------------------------------
+# ============================================================
+# QUALIDADE
+# ============================================================
 
-    if area:
+def calcular_qualidade(dados, veio_jsonld):
 
-        if (
-            tipo in [
-                "Apartamento",
-                "Casa",
-                "Sobrado"
-            ]
-            and area > 1500
-        ):
+    campos = [
+        dados.get("preco"),
+        dados.get("area_m2"),
+        dados.get("quartos"),
+        dados.get("banheiros"),
+        dados.get("garagens"),
+    ]
 
-            area = None
-
-
-    # -----------------------------------------------------
-    # QUARTOS
-    # -----------------------------------------------------
-
-    if quartos:
-
-        if not (
-            1 <= quartos <= 20
-        ):
-
-            quartos = None
-
-
-    # -----------------------------------------------------
-    # BANHEIROS
-    # -----------------------------------------------------
-
-    if banheiros:
-
-        if not (
-            1 <= banheiros <= 20
-        ):
-
-            banheiros = None
-
-
-    # -----------------------------------------------------
-    # GARAGENS
-    # -----------------------------------------------------
-
-    if garagens:
-
-        if not (
-            1 <= garagens <= 20
-        ):
-
-            garagens = None
-
-
-    # -----------------------------------------------------
-    # PREÇO
-    # -----------------------------------------------------
-
-    if preco:
-
-        if not (
-            30000 <= preco <= 50000000
-        ):
-
-            preco = None
-
-
-    return (
-        preco,
-        area,
-        quartos,
-        banheiros,
-        garagens
+    preenchidos = sum(
+        1 for x in campos
+        if x is not None
     )
 
+    if veio_jsonld and preenchidos >= 3:
+        return "alta"
 
-# =========================================================
-# BUSCAR IMÓVEL EXISTENTE
-# =========================================================
+    if preenchidos >= 3:
+        return "media"
 
-def buscar_existente(url):
-
-    filtro = quote(
-        url,
-        safe=""
-    )
-
-
-    endpoint = (
-        f"{SUPABASE_URL}/rest/v1/imoveis"
-        f"?url=eq.{filtro}"
-        f"&select=id"
-    )
-
-
-    resposta = requests.get(
-        endpoint,
-        headers=HEADERS_SUPABASE,
-        timeout=30
-    )
-
-
-    resposta.raise_for_status()
-
-
-    dados = resposta.json()
-
-
-    if dados:
-
-        return dados[0]["id"]
-
+    if preenchidos >= 1:
+        return "baixa"
 
     return None
 
 
-# =========================================================
-# SALVAR
-# =========================================================
-
-def salvar_imovel(imovel):
-
-    existente = buscar_existente(
-        imovel["url"]
-    )
-
-
-    if existente:
-
-        endpoint = (
-            f"{SUPABASE_URL}/rest/v1/imoveis"
-            f"?id=eq.{existente}"
-        )
-
-
-        resposta = requests.patch(
-            endpoint,
-            json=imovel,
-            headers=HEADERS_SUPABASE,
-            timeout=30
-        )
-
-
-    else:
-
-        endpoint = (
-            f"{SUPABASE_URL}/rest/v1/imoveis"
-        )
-
-
-        resposta = requests.post(
-            endpoint,
-            json=imovel,
-            headers={
-                **HEADERS_SUPABASE,
-                "Prefer": "return=minimal"
-            },
-            timeout=30
-        )
-
-
-    resposta.raise_for_status()
-
-
-# =========================================================
+# ============================================================
 # PROCESSAR RESULTADO
-# =========================================================
+# ============================================================
 
-def processar_resultado(
-    resultado,
-    busca
-):
+def processar_resultado(resultado, busca_tipo):
 
-    url = resultado.get(
-        "url"
-    )
-
-    titulo = resultado.get(
-        "title"
-    ) or ""
-
-    resumo = resultado.get(
-        "content"
-    ) or ""
-
+    url = resultado.get("url")
 
     if not url:
+        return None
+
+    titulo_original = (
+        resultado.get("title") or ""
+    ).strip()
+
+    resumo = (
+        resultado.get("content") or ""
+    ).strip()
+
+    # Não aceitar título que seja simplesmente URL
+
+    if titulo_original.startswith("http://") or \
+       titulo_original.startswith("https://"):
+
+        titulo_original = ""
+
+    # Primeiro filtro genérico usando título do resultado
+
+    if pagina_generica(
+        titulo_original,
+        url
+    ):
+
+        print(
+            f"    IGNORADA: {titulo_original or url}"
+        )
 
         return None
 
+    soup, html_text = baixar_pagina(url)
 
-    # -----------------------------------------------------
-    # IGNORAR PÁGINAS GENÉRICAS
-    # -----------------------------------------------------
+    dados = {}
+
+    veio_jsonld = False
+
+    titulo = titulo_original
+
+    if soup:
+
+        jsonlds = extrair_jsonld(soup)
+
+        jsondados = analisar_jsonld(
+            jsonlds
+        )
+
+        if jsondados.get("generica"):
+
+            print(
+                f"    IGNORADA: página de categoria"
+            )
+
+            return None
+
+        if jsondados:
+
+            veio_jsonld = True
+
+            dados.update(
+                {
+                    k: v
+                    for k, v in jsondados.items()
+                    if k != "generica"
+                }
+            )
+
+            if jsondados.get("titulo"):
+                titulo = str(
+                    jsondados["titulo"]
+                ).strip()
+
+    # Se título continua vazio, não inventamos título
+
+    if not titulo:
+
+        print(
+            "    IGNORADA: sem título confiável"
+        )
+
+        return None
+
+    # Filtro novamente depois do JSON-LD
 
     if pagina_generica(
         titulo,
@@ -1170,363 +762,449 @@ def processar_resultado(
 
         return None
 
+    # Texto usado para fallback:
+    # SOMENTE título + snippet da Tavily.
+    # Não usamos toda a página porque isso
+    # pode misturar vários imóveis.
 
-    print(
-        f"\n    Analisando: {titulo}"
-    )
+    texto = f"{titulo} {resumo}"
 
+    # ========================================================
+    # FALLBACK DOS CAMPOS
+    # ========================================================
 
-    # -----------------------------------------------------
-    # ABRIR PÁGINA
-    # -----------------------------------------------------
+    if dados.get("preco") is None:
+        dados["preco"] = extrair_preco(texto)
 
-    pagina = abrir_pagina(
-        url
-    )
+    if dados.get("area_m2") is None:
+        dados["area_m2"] = extrair_area(texto)
 
+    if dados.get("quartos") is None:
+        dados["quartos"] = extrair_quartos(texto)
 
-    soup = None
-    texto_pagina = ""
+    if dados.get("banheiros") is None:
+        dados["banheiros"] = extrair_banheiros(texto)
 
+    if dados.get("garagens") is None:
+        dados["garagens"] = extrair_garagens(texto)
 
-    if pagina:
-
-        soup, texto_pagina = pagina
-
-
-    texto = limpar_texto(
-        f"{titulo} "
-        f"{resumo} "
-        f"{texto_pagina}"
-    )
-
-
-    # -----------------------------------------------------
+    # ========================================================
     # TIPO
-    # -----------------------------------------------------
+    # ========================================================
 
     tipo = identificar_tipo(
         titulo,
-        texto,
-        url,
-        busca
+        busca_tipo,
+        texto
     )
 
-
-    # -----------------------------------------------------
-    # JSON-LD
-    # -----------------------------------------------------
-
-    json_item = None
-
-
-    if soup:
-
-        json_ld = obter_json_ld(
-            soup
-        )
-
-        json_item = encontrar_dados_imovel(
-            json_ld
-        )
-
-
-    # -----------------------------------------------------
-    # EXTRAIR DADOS
-    # -----------------------------------------------------
-
-    preco = (
-        extrair_preco_json(
-            json_item
-        )
-        or
-        extrair_preco_texto(
-            texto
-        )
-    )
-
-
-    area = (
-        extrair_area_json(
-            json_item
-        )
-        or
-        extrair_area_texto(
-            texto
-        )
-    )
-
-
-    quartos = (
-        extrair_quartos_json(
-            json_item
-        )
-        or
-        extrair_quartos_texto(
-            texto
-        )
-    )
-
-
-    banheiros = (
-        extrair_banheiros_json(
-            json_item
-        )
-        or
-        extrair_banheiros_texto(
-            texto
-        )
-    )
-
-
-    garagens = (
-        extrair_garagens_json(
-            json_item
-        )
-        or
-        extrair_garagens_texto(
-            texto
-        )
-    )
-
-
-    # -----------------------------------------------------
-    # VALIDAR
-    # -----------------------------------------------------
-
-    (
-        preco,
-        area,
-        quartos,
-        banheiros,
-        garagens
-    ) = validar_dados(
-        tipo,
-        preco,
-        area,
-        quartos,
-        banheiros,
-        garagens
-    )
-
-
-    # -----------------------------------------------------
-    # SE NÃO TEM NENHUM DADO
-    # -----------------------------------------------------
-
-    if (
-        preco is None
-        and area is None
-        and quartos is None
-        and banheiros is None
-        and garagens is None
-    ):
+    if not tipo:
 
         print(
-            "    IGNORADO: "
-            "nenhum dado imobiliário confiável"
+            f"    IGNORADA: tipo não identificado"
         )
 
         return None
 
+    # Se o título contradiz a busca, não salvamos
+    # um apartamento como terreno, por exemplo.
 
-    agora = datetime.now(
-        timezone.utc
-    ).isoformat()
+    titulo_lower = titulo.lower()
 
+    if busca_tipo == "Terreno":
+
+        if any(x in titulo_lower for x in [
+            "apartamento",
+            "apto",
+            "casa",
+            "sobrado",
+        ]):
+
+            print(
+                f"    IGNORADA: tipo incompatível"
+            )
+
+            return None
+
+    if busca_tipo == "Apartamento":
+
+        if any(x in titulo_lower for x in [
+            "terreno",
+            "lote",
+            "casa",
+            "sobrado",
+        ]):
+
+            print(
+                f"    IGNORADA: tipo incompatível"
+            )
+
+            return None
+
+    if busca_tipo == "Casa":
+
+        if any(x in titulo_lower for x in [
+            "terreno",
+            "lote",
+            "apartamento",
+            "apto",
+        ]):
+
+            print(
+                f"    IGNORADA: tipo incompatível"
+            )
+
+            return None
+
+    # ========================================================
+    # VALIDAÇÃO
+    # ========================================================
+
+    dados = validar_dados(
+        dados,
+        tipo
+    )
+
+    qualidade = calcular_qualidade(
+        dados,
+        veio_jsonld
+    )
+
+    # Para entrar no radar precisamos pelo menos
+    # de preço OU área.
+    #
+    # Assim evitamos páginas completamente vazias.
+
+    if (
+        dados.get("preco") is None
+        and dados.get("area_m2") is None
+    ):
+
+        print(
+            f"    IGNORADA: sem preço ou área"
+        )
+
+        return None
+
+    # ========================================================
+    # BAIRRO
+    # ========================================================
+
+    bairro = None
+
+    texto_lower = texto.lower()
+
+    if "armação" in texto_lower or \
+       "armacao" in texto_lower:
+
+        bairro = "Armação"
+
+    # ========================================================
+    # RESULTADO FINAL
+    # ========================================================
 
     imovel = {
 
         "url": url,
 
-        "fonte": "Tavily",
+        "fonte": identificar_fonte(url),
 
         "titulo": titulo[:500],
 
         "tipo": tipo,
 
-        "preco": preco,
+        "preco": dados.get("preco"),
 
-        "area_m2": area,
+        "area_m2": dados.get("area_m2"),
 
-        "quartos": quartos,
+        "quartos": dados.get("quartos"),
 
-        "banheiros": banheiros,
+        "banheiros": dados.get("banheiros"),
 
-        "garagens": garagens,
+        "garagens": dados.get("garagens"),
 
-        "bairro": "Armação",
+        "endereco": dados.get("endereco"),
 
-        "descricao": resumo[:5000],
+        "bairro": bairro,
 
-        "atualizado_em": agora
+        "descricao": resumo[:3000],
+
+        "qualidade_dados": qualidade,
+
+        "ativo": True,
     }
-
-
-    print(
-        f"    Tipo: {tipo}"
-    )
-
-    print(
-        f"    Preço: {preco}"
-    )
-
-    print(
-        f"    Área: {area}"
-    )
-
-    print(
-        f"    Quartos: {quartos}"
-    )
-
-    print(
-        f"    Banheiros: {banheiros}"
-    )
-
-    print(
-        f"    Garagens: {garagens}"
-    )
-
 
     return imovel
 
 
-# =========================================================
-# PRINCIPAL
-# =========================================================
+# ============================================================
+# SUPABASE
+# ============================================================
 
-def main():
+def headers_supabase():
 
-    encontrados = 0
-    salvos = 0
-    ignorados = 0
+    return {
+        "apikey": SUPABASE_SECRET_KEY,
+        "Authorization":
+            f"Bearer {SUPABASE_SECRET_KEY}",
+        "Content-Type":
+            "application/json",
+        "Prefer":
+            "return=minimal",
+    }
 
-    urls_processadas = set()
 
+def salvar_imovel(imovel):
 
-    for busca in SEARCHES:
+    url_base = (
+        SUPABASE_URL.rstrip("/")
+        + "/rest/v1/"
+        + SUPABASE_TABLE
+    )
 
-        print(
-            "\n" + "=" * 70
+    headers = headers_supabase()
+
+    # Verifica se URL já existe
+
+    try:
+
+        busca = requests.get(
+            url_base,
+            headers=headers,
+            params={
+                "url": f"eq.{imovel['url']}",
+                "select": "id"
+            },
+            timeout=30
         )
 
-        print(
-            f"PESQUISANDO: {busca}"
-        )
+        existentes = busca.json()
+
+    except Exception as e:
 
         print(
-            "=" * 70
+            f"    Erro verificando imóvel: {e}"
         )
 
+        return False
+
+    # Atualiza existente
+
+    if existentes:
+
+        id_imovel = existentes[0]["id"]
 
         try:
 
-            resultados = pesquisar_tavily(
-                busca
+            resposta = requests.patch(
+                url_base,
+                headers=headers,
+                params={
+                    "id": f"eq.{id_imovel}"
+                },
+                json=imovel,
+                timeout=30
             )
 
+            if resposta.status_code >= 300:
+
+                print(
+                    "    Erro PATCH:",
+                    resposta.text
+                )
+
+                return False
+
+            return True
+
+        except Exception as e:
 
             print(
-                f"Resultados encontrados: "
-                f"{len(resultados)}"
+                f"    Erro PATCH: {e}"
             )
 
+            return False
 
-        except Exception as erro:
+    # Insere novo
+
+    try:
+
+        resposta = requests.post(
+            url_base,
+            headers=headers,
+            json=imovel,
+            timeout=30
+        )
+
+        if resposta.status_code >= 300:
 
             print(
-                f"Erro Tavily: {erro}"
+                "    Erro POST:",
+                resposta.text
             )
 
-            continue
+            return False
 
+        return True
+
+    except Exception as e:
+
+        print(
+            f"    Erro POST: {e}"
+        )
+
+        return False
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    print("=" * 70)
+    print("RADAR DE IMÓVEIS - PENHA / ARMAÇÃO")
+    print("VERSÃO 5")
+    print("=" * 70)
+
+    urls_processadas = set()
+
+    analisados = 0
+    salvos = 0
+    ignorados = 0
+
+    for tipo, consulta, dominio in BUSCAS:
+
+        query = f"{consulta} site:{dominio}"
+
+        print()
+        print("=" * 70)
+        print(f"BUSCANDO: {tipo}")
+        print(f"SITE: {dominio}")
+        print("=" * 70)
+
+        resultados = pesquisar_tavily(
+            query,
+            dominio
+        )
+
+        print(
+            f"Resultados encontrados: "
+            f"{len(resultados)}"
+        )
 
         for resultado in resultados:
 
-            encontrados += 1
-
-
-            url = resultado.get(
-                "url"
-            )
-
+            url = resultado.get("url")
 
             if not url:
+                ignorados += 1
                 continue
 
+            # Evita repetir o mesmo anúncio
+            # entre buscas
 
             if url in urls_processadas:
+
+                print(
+                    "    DUPLICADO:"
+                    f" {url}"
+                )
+
                 continue
 
+            urls_processadas.add(url)
 
-            urls_processadas.add(
-                url
+            analisados += 1
+
+            titulo = (
+                resultado.get("title")
+                or url
             )
 
+            print()
+            print(
+                f"    Analisando: {titulo}"
+            )
 
-            try:
+            imovel = processar_resultado(
+                resultado,
+                tipo
+            )
 
-                imovel = processar_resultado(
-                    resultado,
-                    busca
-                )
+            if not imovel:
 
+                ignorados += 1
+                continue
 
-                if not imovel:
+            print(
+                f"    Tipo: "
+                f"{imovel.get('tipo')}"
+            )
 
-                    ignorados += 1
+            print(
+                f"    Preço: "
+                f"{imovel.get('preco')}"
+            )
 
-                    continue
+            print(
+                f"    Área: "
+                f"{imovel.get('area_m2')}"
+            )
 
+            print(
+                f"    Quartos: "
+                f"{imovel.get('quartos')}"
+            )
 
-                salvar_imovel(
-                    imovel
-                )
+            print(
+                f"    Banheiros: "
+                f"{imovel.get('banheiros')}"
+            )
 
+            print(
+                f"    Garagens: "
+                f"{imovel.get('garagens')}"
+            )
 
-                salvos += 1
+            print(
+                f"    Qualidade: "
+                f"{imovel.get('qualidade_dados')}"
+            )
 
+            if salvar_imovel(imovel):
 
                 print(
                     "    ✓ Salvo/atualizado"
                 )
 
+                salvos += 1
 
-            except Exception as erro:
+            else:
 
                 print(
-                    f"    ✗ ERRO: {erro}"
+                    "    ✗ Erro ao salvar"
                 )
 
+    print()
+    print("=" * 70)
+    print("RADAR FINALIZADO")
+    print("=" * 70)
 
     print(
-        "\n" + "=" * 70
+        f"Resultados analisados: {analisados}"
     )
 
     print(
-        "RADAR FINALIZADO"
+        f"Imóveis salvos/atualizados: {salvos}"
     )
 
     print(
-        f"Resultados analisados: "
-        f"{encontrados}"
+        f"Ignorados: {ignorados}"
     )
 
-    print(
-        f"Imóveis salvos/atualizados: "
-        f"{salvos}"
-    )
-
-    print(
-        f"Ignorados: "
-        f"{ignorados}"
-    )
-
-    print(
-        "=" * 70
-    )
+    print("=" * 70)
 
 
 if __name__ == "__main__":
-
     main()
