@@ -70,7 +70,11 @@ def limpar_texto(texto):
     return texto.strip()
 
 
-def numero(valor):
+# =========================================================
+# NÚMERO
+# =========================================================
+
+def converter_numero(valor):
 
     if valor is None:
         return None
@@ -78,454 +82,37 @@ def numero(valor):
     if isinstance(valor, (int, float)):
         return float(valor)
 
-    texto = str(valor)
+    texto = str(valor).strip()
 
     texto = texto.replace("R$", "")
     texto = texto.replace("m²", "")
     texto = texto.replace("m2", "")
     texto = texto.strip()
 
-    # Ex.: 650.000
-    if "." in texto and "," not in texto:
-        partes = texto.split(".")
-
-        if len(partes[-1]) == 3:
-            texto = texto.replace(".", "")
-
-    # Ex.: 650.000,50
-    if "," in texto:
-        texto = texto.replace(".", "")
-        texto = texto.replace(",", ".")
+    if not texto:
+        return None
 
     try:
+
+        if "," in texto:
+            texto = texto.replace(".", "")
+            texto = texto.replace(",", ".")
+
+        elif "." in texto:
+
+            partes = texto.split(".")
+
+            if len(partes[-1]) == 3:
+                texto = texto.replace(".", "")
+
         return float(texto)
+
     except Exception:
         return None
 
 
 # =========================================================
-# JSON-LD
-# =========================================================
-
-def extrair_json_ld(soup):
-
-    dados = []
-
-    scripts = soup.find_all(
-        "script",
-        type="application/ld+json"
-    )
-
-    for script in scripts:
-
-        try:
-
-            conteudo = script.string or script.get_text()
-
-            if not conteudo:
-                continue
-
-            obj = json.loads(conteudo)
-
-            if isinstance(obj, list):
-                dados.extend(obj)
-
-            elif isinstance(obj, dict):
-
-                if "@graph" in obj:
-                    dados.extend(obj["@graph"])
-
-                else:
-                    dados.append(obj)
-
-        except Exception:
-            continue
-
-    return dados
-
-
-def procurar_json_ld(dados):
-
-    melhor = None
-
-    for item in dados:
-
-        if not isinstance(item, dict):
-            continue
-
-        tipo = item.get("@type", "")
-
-        if isinstance(tipo, list):
-            tipo = " ".join(tipo)
-
-        tipo = str(tipo).lower()
-
-        if any(
-            palavra in tipo
-            for palavra in [
-                "product",
-                "offer",
-                "realestate",
-                "residence",
-                "house",
-                "apartment",
-                "singlefamilyresidence"
-            ]
-        ):
-            melhor = item
-            break
-
-    return melhor
-
-
-# =========================================================
-# PREÇO
-# =========================================================
-
-def extrair_preco_json(item):
-
-    if not item:
-        return None
-
-    offers = item.get("offers")
-
-    if isinstance(offers, list):
-        offers = offers[0] if offers else None
-
-    if isinstance(offers, dict):
-
-        valor = offers.get("price")
-
-        valor = numero(valor)
-
-        if valor and valor >= 30000:
-            return valor
-
-    valor = item.get("price")
-
-    valor = numero(valor)
-
-    if valor and valor >= 30000:
-        return valor
-
-    return None
-
-
-def extrair_preco_texto(texto):
-
-    padroes = [
-        r"R\$\s*([\d\.]+(?:,\d{2})?)",
-        r"R\$\s*([\d]+(?:[.,]\d+)?)\s*(?:mil)"
-    ]
-
-    for padrao in padroes:
-
-        resultado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-        if not resultado:
-            continue
-
-        valor = resultado.group(1)
-
-        if "mil" in resultado.group(0).lower():
-            valor = numero(valor)
-
-            if valor:
-                valor *= 1000
-
-        else:
-            valor = numero(valor)
-
-        if valor and 30000 <= valor <= 50000000:
-            return valor
-
-    return None
-
-
-# =========================================================
-# ÁREA
-# =========================================================
-
-def extrair_area_json(item):
-
-    if not item:
-        return None
-
-    campos = [
-        "floorSize",
-        "size",
-        "area",
-        "floorArea"
-    ]
-
-    for campo in campos:
-
-        valor = item.get(campo)
-
-        if isinstance(valor, dict):
-            valor = (
-                valor.get("value")
-                or valor.get("maxValue")
-            )
-
-        valor = numero(valor)
-
-        if valor and 15 <= valor <= 5000:
-            return valor
-
-    return None
-
-
-def extrair_area_texto(texto):
-
-    padroes = [
-        r"(\d+(?:[.,]\d+)?)\s*m²",
-        r"(\d+(?:[.,]\d+)?)\s*m2",
-        r"área[^0-9]{0,30}"
-        r"(\d+(?:[.,]\d+)?)\s*m"
-    ]
-
-    for padrao in padroes:
-
-        resultado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-        if resultado:
-
-            valor = numero(
-                resultado.group(1)
-            )
-
-            if valor and 15 <= valor <= 5000:
-                return valor
-
-    return None
-
-
-# =========================================================
-# QUARTOS
-# =========================================================
-
-def extrair_quartos_json(item):
-
-    if not item:
-        return None
-
-    for campo in [
-        "numberOfBedrooms",
-        "numberOfRooms",
-        "bedrooms"
-    ]:
-
-        valor = numero(item.get(campo))
-
-        if valor and 1 <= valor <= 20:
-            return int(valor)
-
-    return None
-
-
-def extrair_quartos_texto(texto):
-
-    padroes = [
-        r"(\d+)\s+quartos?",
-        r"(\d+)\s+dormitórios?",
-        r"(\d+)\s+dorms?"
-    ]
-
-    for padrao in padroes:
-
-        resultado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-        if resultado:
-
-            valor = int(resultado.group(1))
-
-            if 1 <= valor <= 20:
-                return valor
-
-    return None
-
-
-# =========================================================
-# BANHEIROS
-# =========================================================
-
-def extrair_banheiros_json(item):
-
-    if not item:
-        return None
-
-    for campo in [
-        "numberOfBathrooms",
-        "numberOfFullBathrooms",
-        "bathrooms"
-    ]:
-
-        valor = numero(item.get(campo))
-
-        if valor and 1 <= valor <= 20:
-            return int(valor)
-
-    return None
-
-
-def extrair_banheiros_texto(texto):
-
-    padroes = [
-        r"(\d+)\s+banheiros?",
-        r"(\d+)\s+bwc",
-        r"(\d+)\s+wc"
-    ]
-
-    for padrao in padroes:
-
-        resultado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-        if resultado:
-
-            valor = int(resultado.group(1))
-
-            if 1 <= valor <= 20:
-                return valor
-
-    return None
-
-
-# =========================================================
-# GARAGEM
-# =========================================================
-
-def extrair_garagens_json(item):
-
-    if not item:
-        return None
-
-    for campo in [
-        "numberOfParkingSpaces",
-        "parkingSpaces",
-        "numberOfParkingSpaces"
-    ]:
-
-        valor = item.get(campo)
-
-        if isinstance(valor, dict):
-            valor = (
-                valor.get("value")
-                or valor.get("number")
-            )
-
-        valor = numero(valor)
-
-        if valor and 1 <= valor <= 20:
-            return int(valor)
-
-    return None
-
-
-def extrair_garagens_texto(texto):
-
-    padroes = [
-        r"(\d+)\s+vagas?",
-        r"(\d+)\s+garagens?",
-        r"(\d+)\s+vaga de garagem"
-    ]
-
-    for padrao in padroes:
-
-        resultado = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
-        if resultado:
-
-            valor = int(resultado.group(1))
-
-            if 1 <= valor <= 20:
-                return valor
-
-    return None
-
-
-# =========================================================
-# TIPO
-# =========================================================
-
-def extrair_tipo(titulo, texto):
-
-    texto_completo = (
-        f"{titulo} {texto}"
-    ).lower()
-
-    if "apartamento" in texto_completo:
-        return "Apartamento"
-
-    if "sobrado" in texto_completo:
-        return "Sobrado"
-
-    if "casa" in texto_completo:
-        return "Casa"
-
-    if (
-        "terreno" in texto_completo
-        or "lote" in texto_completo
-    ):
-        return "Terreno"
-
-    return None
-
-
-# =========================================================
-# PÁGINAS GENÉRICAS
-# =========================================================
-
-def pagina_generica(titulo):
-
-    if not titulo:
-        return True
-
-    titulo = titulo.lower()
-
-    padroes = [
-        r"^\d+\s+imóveis?",
-        r"^\d+\s+casas?",
-        r"^\d+\s+apartamentos?",
-        r"^\d+\s+terrenos?",
-        r"^\d+\s+lotes?",
-        r"imóveis para venda",
-        r"imóveis à venda",
-        r"casas à venda",
-        r"apartamentos à venda",
-        r"terrenos à venda",
-        r"lotes à venda",
-        r"página\s+\d+"
-    ]
-
-    return any(
-        re.search(p, titulo)
-        for p in padroes
-    )
-
-
-# =========================================================
-# ABRIR PÁGINA
+# PÁGINA WEB
 # =========================================================
 
 def abrir_pagina(url):
@@ -555,14 +142,528 @@ def abrir_pagina(url):
     except Exception as erro:
 
         print(
-            f"    Não abriu página: {erro}"
+            f"    Não foi possível abrir: {erro}"
         )
 
         return None
 
 
 # =========================================================
-# EXISTENTE
+# JSON-LD
+# =========================================================
+
+def obter_json_ld(soup):
+
+    resultados = []
+
+    if not soup:
+        return resultados
+
+    scripts = soup.find_all(
+        "script",
+        type="application/ld+json"
+    )
+
+    for script in scripts:
+
+        try:
+
+            conteudo = script.string or script.get_text()
+
+            if not conteudo:
+                continue
+
+            objeto = json.loads(conteudo)
+
+            if isinstance(objeto, list):
+
+                resultados.extend(objeto)
+
+            elif isinstance(objeto, dict):
+
+                if "@graph" in objeto:
+
+                    grafico = objeto["@graph"]
+
+                    if isinstance(grafico, list):
+                        resultados.extend(grafico)
+
+                else:
+
+                    resultados.append(objeto)
+
+        except Exception:
+            continue
+
+    return resultados
+
+
+def encontrar_dados_imovel(json_ld):
+
+    candidatos = []
+
+    for item in json_ld:
+
+        if not isinstance(item, dict):
+            continue
+
+        tipo = item.get("@type", "")
+
+        if isinstance(tipo, list):
+            tipo = " ".join(tipo)
+
+        tipo = str(tipo).lower()
+
+        palavras = [
+            "product",
+            "offer",
+            "realestate",
+            "residence",
+            "house",
+            "apartment",
+            "singlefamilyresidence"
+        ]
+
+        if any(
+            palavra in tipo
+            for palavra in palavras
+        ):
+
+            candidatos.append(item)
+
+    if not candidatos:
+        return None
+
+    return candidatos[0]
+
+
+# =========================================================
+# TIPO
+# =========================================================
+
+def identificar_tipo(titulo, texto):
+
+    conteudo = (
+        f"{titulo} {texto}"
+    ).lower()
+
+    if "apartamento" in conteudo:
+        return "Apartamento"
+
+    if "sobrado" in conteudo:
+        return "Sobrado"
+
+    if "casa" in conteudo:
+        return "Casa"
+
+    if (
+        "terreno" in conteudo
+        or "lote" in conteudo
+    ):
+        return "Terreno"
+
+    return None
+
+
+# =========================================================
+# PREÇO
+# =========================================================
+
+def preco_json(item):
+
+    if not item:
+        return None
+
+    ofertas = item.get("offers")
+
+    if isinstance(ofertas, list):
+        ofertas = ofertas[0] if ofertas else None
+
+    if isinstance(ofertas, dict):
+
+        valor = converter_numero(
+            ofertas.get("price")
+        )
+
+        if valor and 30000 <= valor <= 50000000:
+            return valor
+
+    valor = converter_numero(
+        item.get("price")
+    )
+
+    if valor and 30000 <= valor <= 50000000:
+        return valor
+
+    return None
+
+
+def preco_texto(texto):
+
+    padroes = [
+        r"R\$\s*([\d\.]+(?:,\d{1,2})?)",
+        r"R\$\s*([\d]+(?:[.,]\d+)?)\s*mil"
+    ]
+
+    for padrao in padroes:
+
+        encontrado = re.search(
+            padrao,
+            texto,
+            re.I
+        )
+
+        if not encontrado:
+            continue
+
+        valor = converter_numero(
+            encontrado.group(1)
+        )
+
+        if "mil" in encontrado.group(0).lower():
+
+            if valor:
+                valor *= 1000
+
+        if valor and 30000 <= valor <= 50000000:
+            return valor
+
+    return None
+
+
+# =========================================================
+# ÁREA
+# =========================================================
+
+def area_json(item):
+
+    if not item:
+        return None
+
+    for campo in [
+        "floorSize",
+        "floorArea",
+        "area",
+        "size"
+    ]:
+
+        valor = item.get(campo)
+
+        if isinstance(valor, dict):
+
+            valor = (
+                valor.get("value")
+                or valor.get("maxValue")
+            )
+
+        valor = converter_numero(valor)
+
+        if valor and 15 <= valor <= 5000:
+            return valor
+
+    return None
+
+
+def area_texto(texto):
+
+    padroes = [
+        r"(\d+(?:[.,]\d+)?)\s*m²",
+        r"(\d+(?:[.,]\d+)?)\s*m2"
+    ]
+
+    for padrao in padroes:
+
+        encontrado = re.search(
+            padrao,
+            texto,
+            re.I
+        )
+
+        if encontrado:
+
+            valor = converter_numero(
+                encontrado.group(1)
+            )
+
+            if valor and 15 <= valor <= 5000:
+                return valor
+
+    return None
+
+
+# =========================================================
+# QUARTOS
+# =========================================================
+
+def quartos_json(item):
+
+    if not item:
+        return None
+
+    for campo in [
+        "numberOfBedrooms",
+        "numberOfRooms",
+        "bedrooms"
+    ]:
+
+        valor = converter_numero(
+            item.get(campo)
+        )
+
+        if valor and 1 <= valor <= 20:
+            return int(valor)
+
+    return None
+
+
+def quartos_texto(texto):
+
+    padroes = [
+        r"(\d+)\s+quartos?",
+        r"(\d+)\s+dormitórios?",
+        r"(\d+)\s+dorms?"
+    ]
+
+    for padrao in padroes:
+
+        encontrado = re.search(
+            padrao,
+            texto,
+            re.I
+        )
+
+        if encontrado:
+
+            valor = int(
+                encontrado.group(1)
+            )
+
+            if 1 <= valor <= 20:
+                return valor
+
+    return None
+
+
+# =========================================================
+# BANHEIROS
+# =========================================================
+
+def banheiros_json(item):
+
+    if not item:
+        return None
+
+    for campo in [
+        "numberOfBathrooms",
+        "numberOfFullBathrooms",
+        "bathrooms"
+    ]:
+
+        valor = converter_numero(
+            item.get(campo)
+        )
+
+        if valor and 1 <= valor <= 20:
+            return int(valor)
+
+    return None
+
+
+def banheiros_texto(texto):
+
+    padroes = [
+        r"(\d+)\s+banheiros?",
+        r"(\d+)\s+bwc",
+        r"(\d+)\s+wc"
+    ]
+
+    for padrao in padroes:
+
+        encontrado = re.search(
+            padrao,
+            texto,
+            re.I
+        )
+
+        if encontrado:
+
+            valor = int(
+                encontrado.group(1)
+            )
+
+            if 1 <= valor <= 20:
+                return valor
+
+    return None
+
+
+# =========================================================
+# GARAGEM
+# =========================================================
+
+def garagem_json(item):
+
+    if not item:
+        return None
+
+    for campo in [
+        "numberOfParkingSpaces",
+        "parkingSpaces"
+    ]:
+
+        valor = item.get(campo)
+
+        if isinstance(valor, dict):
+
+            valor = (
+                valor.get("value")
+                or valor.get("number")
+            )
+
+        valor = converter_numero(valor)
+
+        if valor and 1 <= valor <= 20:
+            return int(valor)
+
+    return None
+
+
+def garagem_texto(texto):
+
+    padroes = [
+        r"(\d+)\s+vagas?",
+        r"(\d+)\s+garagens?",
+        r"(\d+)\s+vaga de garagem"
+    ]
+
+    for padrao in padroes:
+
+        encontrado = re.search(
+            padrao,
+            texto,
+            re.I
+        )
+
+        if encontrado:
+
+            valor = int(
+                encontrado.group(1)
+            )
+
+            if 1 <= valor <= 20:
+                return valor
+
+    return None
+
+
+# =========================================================
+# PÁGINA GENÉRICA
+# =========================================================
+
+def pagina_generica(titulo, url):
+
+    titulo = limpar_texto(titulo).lower()
+    url = limpar_texto(url).lower()
+
+    palavras = [
+        "instagram",
+        "facebook",
+        "youtube",
+        "tiktok"
+    ]
+
+    if any(
+        palavra in url
+        for palavra in palavras
+    ):
+        return True
+
+    padroes = [
+        r"^\d+\s+imóveis?",
+        r"^\d+\s+casas?",
+        r"^\d+\s+apartamentos?",
+        r"^\d+\s+terrenos?",
+        r"^\d+\s+lotes?",
+        r"imóveis para venda",
+        r"imóveis à venda",
+        r"casas à venda",
+        r"apartamentos à venda",
+        r"terrenos à venda",
+        r"lotes à venda",
+        r"página\s+\d+",
+        r"imóveis encontrados",
+        r"apartamentos e pousadas à venda",
+        r"lotes e terrenos para venda",
+        r"terrenos, lotes e condomínios"
+    ]
+
+    for padrao in padroes:
+
+        if re.search(padrao, titulo):
+            return True
+
+    return False
+
+
+# =========================================================
+# VALIDAÇÃO
+# =========================================================
+
+def validar_dados(
+    tipo,
+    preco,
+    area,
+    quartos,
+    banheiros,
+    garagens
+):
+
+    # Terreno nunca recebe
+    # características de residência
+    if tipo == "Terreno":
+
+        quartos = None
+        banheiros = None
+        garagens = None
+
+    # Área impossível
+    if area:
+
+        if tipo in [
+            "Apartamento",
+            "Casa",
+            "Sobrado"
+        ] and area > 1500:
+
+            area = None
+
+    # Quartos absurdos
+    if quartos and not 1 <= quartos <= 20:
+        quartos = None
+
+    if banheiros and not 1 <= banheiros <= 20:
+        banheiros = None
+
+    if garagens and not 1 <= garagens <= 20:
+        garagens = None
+
+    # Preço absurdo
+    if preco and not (
+        30000 <= preco <= 50000000
+    ):
+        preco = None
+
+    return (
+        preco,
+        area,
+        quartos,
+        banheiros,
+        garagens
+    )
+
+
+# =========================================================
+# SUPABASE
 # =========================================================
 
 def buscar_existente(url):
@@ -592,10 +693,6 @@ def buscar_existente(url):
 
     return None
 
-
-# =========================================================
-# SALVAR
-# =========================================================
 
 def salvar_imovel(imovel):
 
@@ -637,7 +734,7 @@ def salvar_imovel(imovel):
 
 
 # =========================================================
-# PROCESSAR
+# PROCESSAR RESULTADO
 # =========================================================
 
 def processar_resultado(resultado):
@@ -649,17 +746,13 @@ def processar_resultado(resultado):
     if not url:
         return None
 
-    if pagina_generica(titulo):
+    if pagina_generica(titulo, url):
 
         print(
-            f"    IGNORADA — página genérica: {titulo}"
+            f"    IGNORADA: {titulo}"
         )
 
         return None
-
-    print(
-        f"\n  Analisando: {titulo}"
-    )
 
     pagina = abrir_pagina(url)
 
@@ -674,81 +767,79 @@ def processar_resultado(resultado):
         f"{titulo} {resumo} {texto_pagina}"
     )
 
-    # -------------------------
-    # JSON-LD
-    # -------------------------
-
+    # JSON estruturado
     json_item = None
 
     if soup:
 
-        dados_ld = extrair_json_ld(
-            soup
+        json_ld = obter_json_ld(soup)
+
+        json_item = encontrar_dados_imovel(
+            json_ld
         )
 
-        json_item = procurar_json_ld(
-            dados_ld
-        )
-
-    # -------------------------
-    # EXTRAÇÃO
-    # -------------------------
-
-    preco = (
-        extrair_preco_json(json_item)
-        or extrair_preco_texto(texto)
-    )
-
-    area = (
-        extrair_area_json(json_item)
-        or extrair_area_texto(texto)
-    )
-
-    quartos = (
-        extrair_quartos_json(json_item)
-        or extrair_quartos_texto(texto)
-    )
-
-    banheiros = (
-        extrair_banheiros_json(json_item)
-        or extrair_banheiros_texto(texto)
-    )
-
-    garagens = (
-        extrair_garagens_json(json_item)
-        or extrair_garagens_texto(texto)
-    )
-
-    tipo = extrair_tipo(
+    tipo = identificar_tipo(
         titulo,
         texto
     )
 
-    # =====================================================
-    # VALIDAÇÕES
-    # =====================================================
+    preco = (
+        preco_json(json_item)
+        or preco_texto(texto)
+    )
 
-    if tipo == "Terreno":
+    area = (
+        area_json(json_item)
+        or area_texto(texto)
+    )
 
-        quartos = None
-        banheiros = None
-        garagens = None
+    quartos = (
+        quartos_json(json_item)
+        or quartos_texto(texto)
+    )
 
-    if tipo in [
-        "Apartamento",
-        "Casa",
-        "Sobrado"
-    ]:
+    banheiros = (
+        banheiros_json(json_item)
+        or banheiros_texto(texto)
+    )
 
-        if area and area > 2000:
-            area = None
+    garagens = (
+        garagem_json(json_item)
+        or garagem_texto(texto)
+    )
 
-    # Evita valores absurdos
-    if preco and (
-        preco < 30000
-        or preco > 50000000
+    (
+        preco,
+        area,
+        quartos,
+        banheiros,
+        garagens
+    ) = validar_dados(
+        tipo,
+        preco,
+        area,
+        quartos,
+        banheiros,
+        garagens
+    )
+
+    # -----------------------------------------------------
+    # NÃO SALVAR RESULTADO SEM NENHUM DADO ÚTIL
+    # -----------------------------------------------------
+
+    if (
+        preco is None
+        and area is None
+        and quartos is None
+        and banheiros is None
+        and garagens is None
     ):
-        preco = None
+
+        print(
+            "    IGNORADO: nenhum dado imobiliário confiável"
+        )
+
+        return None
 
     agora = datetime.now(
         timezone.utc
@@ -778,11 +869,10 @@ def processar_resultado(resultado):
 
         "descricao": (
             resumo[:5000]
-            if resumo
-            else texto[:5000]
         ),
 
         "atualizado_em": agora
+
     }
 
     print(
@@ -813,13 +903,13 @@ def processar_resultado(resultado):
 
 
 # =========================================================
-# MAIN
+# PRINCIPAL
 # =========================================================
 
 def main():
 
     encontrados = 0
-    processados = 0
+    salvos = 0
     ignorados = 0
 
     urls_processadas = set()
@@ -849,7 +939,8 @@ def main():
             continue
 
         print(
-            f"Resultados: {len(resultados)}"
+            f"Resultados encontrados: "
+            f"{len(resultados)}"
         )
 
         for resultado in resultados:
@@ -881,7 +972,7 @@ def main():
                     imovel
                 )
 
-                processados += 1
+                salvos += 1
 
                 print(
                     "    ✓ Salvo/atualizado"
@@ -898,15 +989,15 @@ def main():
     print("RADAR FINALIZADO")
 
     print(
-        f"Resultados encontrados: {encontrados}"
+        f"Resultados analisados: {encontrados}"
     )
 
     print(
-        f"Imóveis processados: {processados}"
+        f"Imóveis salvos/atualizados: {salvos}"
     )
 
     print(
-        f"Páginas ignoradas: {ignorados}"
+        f"Ignorados: {ignorados}"
     )
 
     print("=" * 70)
