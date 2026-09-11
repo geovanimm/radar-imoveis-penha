@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Radar de Imóveis - Armação</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f5f6f8;
+      color: #222;
+    }
+
+    header {
+      background: #111827;
+      color: white;
+      padding: 22px;
+    }
+
+    header h1 {
+      margin: 0 0 6px;
+      font-size: 24px;
+    }
+
+    header p {
+      margin: 0;
+      opacity: 0.75;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: auto;
+      padding: 20px;
+    }
+
+    .resumo {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+
+    .box {
+      background: white;
+      padding: 18px;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+
+    .box strong {
+      display: block;
+      font-size: 26px;
+      margin-top: 5px;
+    }
+
+    .filtros {
+      background: white;
+      padding: 15px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    input, select {
+      padding: 11px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    .imoveis {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 18px;
+    }
+
+    .imovel {
+      background: white;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.07);
+    }
+
+    .imovel h3 {
+      margin-top: 0;
+      font-size: 17px;
+    }
+
+    .preco {
+      font-size: 22px;
+      font-weight: bold;
+      margin: 12px 0;
+    }
+
+    .dados {
+      color: #555;
+      line-height: 1.8;
+    }
+
+    .fonte {
+      font-size: 12px;
+      color: #888;
+      margin-top: 10px;
+    }
+
+    .botao {
+      display: block;
+      text-align: center;
+      background: #111827;
+      color: white;
+      padding: 11px;
+      border-radius: 8px;
+      text-decoration: none;
+      margin-top: 15px;
+    }
+
+    .carregando {
+      text-align: center;
+      padding: 40px;
+    }
+
+    @media (max-width: 600px) {
+      .resumo {
+        grid-template-columns: 1fr;
+      }
+
+      .container {
+        padding: 12px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <h1>🏠 Radar de Imóveis</h1>
+  <p>Armação — Penha/SC</p>
+</header>
+
+<div class="container">
+
+  <div class="resumo">
+
+    <div class="box">
+      Total de imóveis
+      <strong id="total">0</strong>
+    </div>
+
+    <div class="box">
+      Com preço
+      <strong id="comPreco">0</strong>
+    </div>
+
+    <div class="box">
+      Última atualização
+      <strong id="atualizacao">-</strong>
+    </div>
+
+  </div>
+
+  <div class="filtros">
+
+    <input
+      type="text"
+      id="busca"
+      placeholder="🔎 Buscar imóvel..."
+    >
+
+    <select id="tipo">
+      <option value="">Todos os tipos</option>
+      <option value="Apartamento">Apartamento</option>
+      <option value="Casa">Casa</option>
+      <option value="Terreno">Terreno</option>
+    </select>
+
+  </div>
+
+  <div id="lista" class="imoveis">
+    <div class="carregando">
+      Carregando imóveis...
+    </div>
+  </div>
+
+</div>
+
+<script>
+
+const SUPABASE_URL =
+  "https://oonmrjuqqxqtseswnhmn.supabase.co";
+
+const SUPABASE_ANON_KEY =
+  "sb_publishable_0dNETGfLkhKkRjR3lmtefQ_N0UzlvwK";
+
+let imoveis = [];
+
+
+async function carregarImoveis() {
+
+  try {
+
+    const resposta = await fetch(
+      `${SUPABASE_URL}/rest/v1/imoveis?select=*&order=criado_em.desc`,
+      {
+        headers: {
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
+        }
+      }
+    );
+
+    if (!resposta.ok) {
+      throw new Error(
+        "Erro Supabase: " + resposta.status
+      );
+    }
+
+    imoveis = await resposta.json();
+
+    atualizarResumo();
+
+    mostrarImoveis();
+
+  } catch (erro) {
+
+    document.getElementById("lista").innerHTML =
+      `<div class="carregando">
+        ❌ Erro ao carregar imóveis.<br><br>
+        ${erro.message}
+      </div>`;
+
+  }
+
+}
+
+
+function atualizarResumo() {
+
+  document.getElementById("total").textContent =
+    imoveis.length;
+
+  document.getElementById("comPreco").textContent =
+    imoveis.filter(i => i.preco !== null).length;
+
+  if (imoveis.length > 0) {
+
+    const data =
+      new Date(imoveis[0].criado_em);
+
+    document.getElementById("atualizacao").textContent =
+      data.toLocaleDateString("pt-BR");
+
+  }
+
+}
+
+
+function mostrarImoveis() {
+
+  const busca =
+    document.getElementById("busca")
+      .value
+      .toLowerCase();
+
+  const tipo =
+    document.getElementById("tipo").value;
+
+  const filtrados =
+    imoveis.filter(imovel => {
+
+      const texto =
+        `${imovel.titulo || ""} ${imovel.descricao || ""}`
+        .toLowerCase();
+
+      const correspondeBusca =
+        texto.includes(busca);
+
+      const correspondeTipo =
+        !tipo ||
+        (imovel.tipo || "")
+          .toLowerCase()
+          .includes(tipo.toLowerCase());
+
+      return correspondeBusca && correspondeTipo;
+
+    });
+
+
+  if (filtrados.length === 0) {
+
+    document.getElementById("lista").innerHTML =
+      `<div class="carregando">
+        Nenhum imóvel encontrado.
+      </div>`;
+
+    return;
+
+  }
+
+
+  document.getElementById("lista").innerHTML =
+    filtrados.map(imovel => `
+
+      <div class="imovel">
+
+        <h3>
+          ${imovel.titulo || "Imóvel"}
+        </h3>
+
+        <div class="preco">
+          ${
+            imovel.preco
+              ? "R$ " +
+                Number(imovel.preco)
+                  .toLocaleString("pt-BR")
+              : "Preço não informado"
+          }
+        </div>
+
+        <div class="dados">
+
+          ${
+            imovel.area_m2
+              ? `📐 ${imovel.area_m2} m²<br>`
+              : ""
+          }
+
+          ${
+            imovel.quartos
+              ? `🛏️ ${imovel.quartos} quartos<br>`
+              : ""
+          }
+
+          ${
+            imovel.banheiros
+              ? `🚿 ${imovel.banheiros} banheiros<br>`
+              : ""
+          }
+
+          ${
+            imovel.garagens
+              ? `🚗 ${imovel.garagens} vagas<br>`
+              : ""
+          }
+
+          ${
+            imovel.bairro
+              ? `📍 ${imovel.bairro}`
+              : ""
+          }
+
+        </div>
+
+        <div class="fonte">
+          Fonte: ${imovel.fonte || "-"}
+        </div>
+
+        ${
+          imovel.url
+            ? `<a
+                class="botao"
+                href="${imovel.url}"
+                target="_blank">
+                Ver anúncio →
+              </a>`
+            : ""
+        }
+
+      </div>
+
+    `).join("");
+
+}
+
+
+document
+  .getElementById("busca")
+  .addEventListener("input", mostrarImoveis);
+
+document
+  .getElementById("tipo")
+  .addEventListener("change", mostrarImoveis);
+
+
+carregarImoveis();
+
+</script>
+
+</body>
+</html>
