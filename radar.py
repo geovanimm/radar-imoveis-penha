@@ -346,7 +346,11 @@ def analisar_jsonld(jsonlds):
         if not isinstance(item, dict):
             continue
 
-        if item.get("@type", "") in TIPOS_JSONLD_GENERICOS:
+        # @type pode vir como string ou como lista de strings.
+        tipo_item = item.get("@type", "")
+        tipos_item = tipo_item if isinstance(tipo_item, list) else [tipo_item]
+
+        if any(t in TIPOS_JSONLD_GENERICOS for t in tipos_item):
             dados["generica"] = True
             continue
 
@@ -759,7 +763,13 @@ def main():
             print()
             print(f"    Analisando: {resultado.get('title') or url}")
 
-            imovel = processar_resultado(resultado, tipo)
+            try:
+                imovel = processar_resultado(resultado, tipo)
+            except Exception as e:
+                print(f"    ERRO inesperado processando resultado: {e}")
+                ignorados += 1
+                continue
+
             if not imovel:
                 ignorados += 1
                 continue
