@@ -692,6 +692,36 @@ def salvar_imovel(imovel):
     return True
 
 
+def limpar_tabela():
+    """Apaga todos os registros da tabela antes de rodar.
+
+    Uso temporário para a fase de testes (ligado via a variável de
+    ambiente LIMPAR_TABELA_ANTES=true) — remover depois que os dados
+    já puderem ser tratados como definitivos.
+    """
+    url_base = SUPABASE_URL.rstrip("/") + "/rest/v1/" + SUPABASE_TABLE
+    headers = headers_supabase()
+
+    try:
+        resposta = requests.delete(
+            url_base,
+            headers=headers,
+            params={"id": "not.is.null"},
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        print(f"Erro ao limpar tabela: {e}")
+        return False
+
+    if resposta.status_code >= 300:
+        print("Erro ao limpar tabela:", resposta.status_code)
+        print(resposta.text[:1000])
+        return False
+
+    print("Tabela limpa antes da execução (LIMPAR_TABELA_ANTES=true).")
+    return True
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -731,6 +761,9 @@ def main():
     print("RADAR DE IMÓVEIS - PENHA / ARMAÇÃO")
     print("VERSÃO 7")
     print("=" * 70)
+
+    if os.getenv("LIMPAR_TABELA_ANTES", "").lower() == "true":
+        limpar_tabela()
 
     urls_processadas = set()
     analisados = salvos = ignorados = 0
