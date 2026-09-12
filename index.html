@@ -112,6 +112,16 @@
       margin-top: 10px;
     }
 
+    .observacao {
+      font-size: 13px;
+      font-style: italic;
+      color: #444;
+      background: #f5f6f8;
+      border-radius: 8px;
+      padding: 10px;
+      margin-top: 10px;
+    }
+
     .botao {
       display: block;
       text-align: center;
@@ -209,7 +219,7 @@ async function carregarImoveis() {
   try {
 
     const resposta = await fetch(
-      `${SUPABASE_URL}/rest/v1/imoveis?select=*&order=criado_em.desc`,
+      `${SUPABASE_URL}/rest/v1/imoveis?select=*&order=preco.asc.nullslast,criado_em.desc`,
       {
         headers: {
           "apikey": SUPABASE_ANON_KEY,
@@ -253,8 +263,13 @@ function atualizarResumo() {
 
   if (imoveis.length > 0) {
 
+    const maisRecente =
+      imoveis.reduce((a, b) =>
+        new Date(a.criado_em) > new Date(b.criado_em) ? a : b
+      );
+
     const data =
-      new Date(imoveis[0].criado_em);
+      new Date(maisRecente.criado_em);
 
     const dataFormatada =
       data.toLocaleDateString("pt-BR");
@@ -344,6 +359,15 @@ function mostrarImoveis() {
           }
 
           ${
+            imovel.preco && imovel.area_m2
+              ? `💰 R$ ${
+                  Math.round(imovel.preco / imovel.area_m2)
+                    .toLocaleString("pt-BR")
+                }/m²<br>`
+              : ""
+          }
+
+          ${
             imovel.quartos
               ? `🛏️ ${imovel.quartos} quartos<br>`
               : ""
@@ -372,6 +396,14 @@ function mostrarImoveis() {
         <div class="fonte">
           Fonte: ${imovel.fonte || "-"}
         </div>
+
+        ${
+          imovel.observacao_ia
+            ? `<div class="observacao">
+                🤖 ${imovel.observacao_ia}
+              </div>`
+            : ""
+        }
 
         ${
           imovel.url
