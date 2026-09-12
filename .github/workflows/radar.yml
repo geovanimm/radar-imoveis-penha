@@ -7,6 +7,10 @@ on:
         description: "Limpar a tabela 'imoveis' antes de rodar (fase de testes)"
         type: boolean
         default: false
+  schedule:
+    # 11:00 UTC = 08:00 em Penha-SC (horário de Brasília, UTC-3).
+    # Rodas agendadas nunca limpam a tabela (só somam/atualizam).
+    - cron: "0 11 * * *"
 
 jobs:
   buscar-imoveis:
