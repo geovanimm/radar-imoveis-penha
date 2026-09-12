@@ -55,10 +55,8 @@ QUERIES_POR_TIPO = {
 }
 
 # Imobiliárias com site próprio em Penha-SC que anunciam a região da
-# Armação (confirmadas manualmente). Portais genéricos (OLX, ZAP, Viva
-# Real, Imovelweb) foram removidos: traziam muito ruído de fora do
-# público-alvo (imóveis de outras cidades, classificados não verificados).
-SITES = [
+# Armação (confirmadas manualmente).
+IMOBILIARIAS_LOCAIS = [
     "imobiliariapenha.com.br",
     "h8imoveispenha.com.br",
     "olegarioimoveis.com.br",
@@ -67,6 +65,18 @@ SITES = [
     "praiaalegreimoveis.com",
     "imobiliariabeatriz.com.br",
 ]
+
+# Grandes portais. OLX foi propositalmente deixado de fora: era a maior
+# fonte de ruído (classificados não verificados, imóveis de outras
+# cidades) quando o radar buscava só nos portais genéricos.
+PORTAIS = [
+    "zapimoveis.com.br",
+    "vivareal.com.br",
+    "imovelweb.com.br",
+    "chavesnamao.com.br",
+]
+
+SITES = IMOBILIARIAS_LOCAIS + PORTAIS
 
 BUSCAS = [
     (tipo, query, site)
@@ -190,6 +200,10 @@ FONTES_POR_DOMINIO = {
     "solimoveis": "Sol Imóveis",
     "praiaalegreimoveis": "Praia Alegre Imóveis",
     "imobiliariabeatriz": "Imobiliária Beatriz",
+    "zapimoveis": "ZAP Imóveis",
+    "vivareal": "Viva Real",
+    "imovelweb": "Imovelweb",
+    "chavesnamao": "Chaves na Mão",
 }
 
 
