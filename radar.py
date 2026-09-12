@@ -235,16 +235,17 @@ PADROES_TITULO_GENERICO = [
     r'^\d+\s+lotes?',
     r'^\d+\s+.*à\s+venda',
 
-    # Categorias
-    r'^apartamentos?\s+(à|a)\s+venda',
-    r'^casas?\s+(à|a)\s+venda',
-    r'^terrenos?\s+(à|a)\s+venda',
-    r'^lotes?.*venda',
-    r'^apartamentos?\s+para\s+venda',
-    r'^casas?\s+para\s+venda',
-    r'^terrenos?\s+para\s+venda',
-    r'^apartamentos?\s+para\s+comprar',
-    r'^casas?\s+para\s+comprar',
+    # Categorias (só no plural: no singular é assim que a Imobiliária
+    # Beatriz nomeia os anúncios individuais, ex.: "Casa à venda, Penha - SC")
+    r'^apartamentos\s+(à|a)\s+venda',
+    r'^casas\s+(à|a)\s+venda',
+    r'^terrenos\s+(à|a)\s+venda',
+    r'^lotes.*venda',
+    r'^apartamentos\s+para\s+venda',
+    r'^casas\s+para\s+venda',
+    r'^terrenos\s+para\s+venda',
+    r'^apartamentos\s+para\s+comprar',
+    r'^casas\s+para\s+comprar',
 
     # Imóveis
     r'imóveis?\s+à\s+venda',
@@ -346,7 +347,11 @@ def analisar_jsonld(jsonlds):
         if not isinstance(item, dict):
             continue
 
-        if item.get("@type", "") in TIPOS_JSONLD_GENERICOS:
+        # @type pode vir como string ou como lista de strings.
+        tipo_item = item.get("@type", "")
+        tipos_item = tipo_item if isinstance(tipo_item, list) else [tipo_item]
+
+        if any(t in TIPOS_JSONLD_GENERICOS for t in tipos_item):
             dados["generica"] = True
             continue
 
@@ -494,6 +499,29 @@ def calcular_qualidade(dados, veio_jsonld):
 
 
 # ============================================================
+# FORA DE SANTA CATARINA
+# ============================================================
+# As imobiliárias em SITES às vezes anunciam imóveis fora de Penha-SC
+# (outras cidades do litoral catarinense, ou até outros estados — algumas
+# repetem a mesma marca "Imobiliária em Penha SC" no título mesmo para
+# imóveis de outras regiões). Detecta padrões "Cidade/UF" ou "Cidade - UF"
+# apontando para um estado que não seja SC.
+
+OUTRAS_UFS = {
+    "ac", "al", "ap", "am", "ba", "ce", "df", "es", "go", "ma", "mt",
+    "ms", "mg", "pa", "pb", "pr", "pe", "pi", "rj", "rn", "rs", "ro",
+    "rr", "sp", "se", "to",
+}
+
+
+def menciona_outra_uf(texto):
+    for m in re.finditer(r'[/\-]\s*([A-Z]{2})\b', texto):
+        if m.group(1).lower() in OUTRAS_UFS:
+            return True
+    return False
+
+
+# ============================================================
 # TIPO INCOMPATÍVEL COM A BUSCA
 # ============================================================
 
@@ -560,6 +588,15 @@ def processar_resultado(resultado, busca_tipo):
     # Usamos apenas título + snippet (não a página inteira) para evitar
     # misturar dados de vários imóveis listados na mesma página.
     texto = f"{titulo} {resumo}"
+    texto_lower = texto.lower()
+
+    if not any(p in texto_lower for p in ("penha", "armação", "armacao")):
+        print("    IGNORADA: fora de Penha/Armação")
+        return None
+
+    if menciona_outra_uf(texto):
+        print("    IGNORADA: fora de Santa Catarina")
+        return None
 
     if dados.get("preco") is None:
         dados["preco"] = extrair_preco(texto)
@@ -588,7 +625,6 @@ def processar_resultado(resultado, busca_tipo):
         print("    IGNORADA: sem preço ou área")
         return None
 
-    texto_lower = texto.lower()
     bairro = "Armação" if ("armação" in texto_lower or "armacao" in texto_lower) else None
 
     return {
@@ -688,6 +724,36 @@ def salvar_imovel(imovel):
     return True
 
 
+def limpar_tabela():
+    """Apaga todos os registros da tabela antes de rodar.
+
+    Uso temporário para a fase de testes (ligado via a variável de
+    ambiente LIMPAR_TABELA_ANTES=true) — remover depois que os dados
+    já puderem ser tratados como definitivos.
+    """
+    url_base = SUPABASE_URL.rstrip("/") + "/rest/v1/" + SUPABASE_TABLE
+    headers = headers_supabase()
+
+    try:
+        resposta = requests.delete(
+            url_base,
+            headers=headers,
+            params={"id": "not.is.null"},
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        print(f"Erro ao limpar tabela: {e}")
+        return False
+
+    if resposta.status_code >= 300:
+        print("Erro ao limpar tabela:", resposta.status_code)
+        print(resposta.text[:1000])
+        return False
+
+    print("Tabela limpa antes da execução (LIMPAR_TABELA_ANTES=true).")
+    return True
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -728,6 +794,9 @@ def main():
     print("VERSÃO 7")
     print("=" * 70)
 
+    if os.getenv("LIMPAR_TABELA_ANTES", "").lower() == "true":
+        limpar_tabela()
+
     urls_processadas = set()
     analisados = salvos = ignorados = 0
 
@@ -759,7 +828,13 @@ def main():
             print()
             print(f"    Analisando: {resultado.get('title') or url}")
 
-            imovel = processar_resultado(resultado, tipo)
+            try:
+                imovel = processar_resultado(resultado, tipo)
+            except Exception as e:
+                print(f"    ERRO inesperado processando resultado: {e}")
+                ignorados += 1
+                continue
+
             if not imovel:
                 ignorados += 1
                 continue

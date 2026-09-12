@@ -2,6 +2,11 @@ name: Radar de Imóveis
 
 on:
   workflow_dispatch:
+    inputs:
+      limpar_tabela:
+        description: "Limpar a tabela 'imoveis' antes de rodar (fase de testes)"
+        type: boolean
+        default: false
 
 jobs:
   buscar-imoveis:
@@ -25,4 +30,5 @@ jobs:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          LIMPAR_TABELA_ANTES: ${{ inputs.limpar_tabela }}
         run: python radar.py
