@@ -1,3 +1,9 @@
+"""Radar de imóveis à venda no bairro Armação, Penha/SC.
+
+Busca anúncios via Tavily, extrai dados (preço, área, quartos...) das
+páginas encontradas e mantém a tabela `imoveis` no Supabase sincronizada.
+"""
+
 import os
 import re
 import json
@@ -17,98 +23,51 @@ SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 
 SUPABASE_TABLE = "imoveis"
 
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0 Safari/537.36"
+)
+
+# Limites usados para descartar valores absurdos extraídos por regex.
+PRECO_MIN, PRECO_MAX = 20_000, 20_000_000
+AREA_MIN, AREA_MAX = 10, 10_000
+AREA_MAX_CASA_APTO = 1_500
+NUMERO_MIN, NUMERO_MAX = 0, 10
+
+sessao_web = requests.Session()
+sessao_web.headers.update({"User-Agent": USER_AGENT})
+
 
 # ============================================================
 # BUSCAS
 # ============================================================
+# Uma busca por combinação (tipo de imóvel x site). Bairro fixo: Armação.
+
+QUERIES_POR_TIPO = {
+    "Apartamento": 'apartamento venda "Armação" Penha SC',
+    "Casa": 'casa venda "Armação" Penha SC',
+    "Terreno": 'terreno lote venda "Armação" Penha SC',
+}
+
+# Imobiliárias com site próprio em Penha-SC que anunciam a região da
+# Armação (confirmadas manualmente). Portais genéricos (OLX, ZAP, Viva
+# Real, Imovelweb) foram removidos: traziam muito ruído de fora do
+# público-alvo (imóveis de outras cidades, classificados não verificados).
+SITES = [
+    "imobiliariapenha.com.br",
+    "h8imoveispenha.com.br",
+    "olegarioimoveis.com.br",
+    "shsimoveis.com",
+    "solimoveis.com.br",
+    "praiaalegreimoveis.com",
+    "imobiliariabeatriz.com.br",
+]
 
 BUSCAS = [
-
-    # --------------------------------------------------------
-    # APARTAMENTOS
-    # --------------------------------------------------------
-
-    (
-        "Apartamento",
-        'apartamento venda "Armação" Penha SC',
-        "zapimoveis.com.br"
-    ),
-
-    (
-        "Apartamento",
-        'apartamento venda "Armação" Penha SC',
-        "vivareal.com.br"
-    ),
-
-    (
-        "Apartamento",
-        'apartamento venda "Armação" Penha SC',
-        "olx.com.br"
-    ),
-
-    (
-        "Apartamento",
-        'apartamento venda "Armação" Penha SC',
-        "imovelweb.com.br"
-    ),
-
-
-    # --------------------------------------------------------
-    # CASAS
-    # --------------------------------------------------------
-
-    (
-        "Casa",
-        'casa venda "Armação" Penha SC',
-        "zapimoveis.com.br"
-    ),
-
-    (
-        "Casa",
-        'casa venda "Armação" Penha SC',
-        "vivareal.com.br"
-    ),
-
-    (
-        "Casa",
-        'casa venda "Armação" Penha SC',
-        "olx.com.br"
-    ),
-
-    (
-        "Casa",
-        'casa venda "Armação" Penha SC',
-        "imovelweb.com.br"
-    ),
-
-
-    # --------------------------------------------------------
-    # TERRENOS
-    # --------------------------------------------------------
-
-    (
-        "Terreno",
-        'terreno lote venda "Armação" Penha SC',
-        "zapimoveis.com.br"
-    ),
-
-    (
-        "Terreno",
-        'terreno lote venda "Armação" Penha SC',
-        "vivareal.com.br"
-    ),
-
-    (
-        "Terreno",
-        'terreno lote venda "Armação" Penha SC',
-        "olx.com.br"
-    ),
-
-    (
-        "Terreno",
-        'terreno lote venda "Armação" Penha SC',
-        "imovelweb.com.br"
-    ),
+    (tipo, query, site)
+    for tipo, query in QUERIES_POR_TIPO.items()
+    for site in SITES
 ]
 
 
@@ -117,2128 +76,711 @@ BUSCAS = [
 # ============================================================
 
 def normalizar_numero(valor):
-
+    """Converte strings como 'R$ 590.000,00' ou '590.000' em float."""
     if valor is None:
         return None
 
     try:
+        valor = str(valor).replace("R$", "").replace("m²", "").replace("m2", "").strip()
 
-        valor = str(valor)
-
-        valor = (
-            valor
-            .replace("R$", "")
-            .replace("m²", "")
-            .replace("m2", "")
-            .strip()
-        )
-
-        # Exemplo:
-        # 590.000,00
-        # 590.000
-        # 590000
-
+        # Exemplos: "590.000,00" | "590.000" | "590000"
         if "," in valor:
-
-            valor = (
-                valor
-                .replace(".", "")
-                .replace(",", ".")
-            )
-
-        else:
-
-            if valor.count(".") == 1:
-
-                partes = valor.split(".")
-
-                if len(partes[1]) == 3:
-
-                    valor = valor.replace(".", "")
+            valor = valor.replace(".", "").replace(",", ".")
+        elif valor.count(".") == 1 and len(valor.split(".")[1]) == 3:
+            # "." usado como separador de milhar (ex: "590.000")
+            valor = valor.replace(".", "")
 
         return float(valor)
-
-    except:
-
+    except (ValueError, TypeError):
         return None
 
 
 # ============================================================
-# EXTRAIR PREÇO
+# EXTRAÇÃO DE CAMPOS POR REGEX
 # ============================================================
 
 def extrair_preco(texto):
-
     if not texto:
         return None
 
     padroes = [
-
         r'R\$\s*([\d\.]+(?:,\d{2})?)',
-
         r'R\$\s*([\d\.]+)',
-
     ]
 
     for padrao in padroes:
-
-        m = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
+        m = re.search(padrao, texto, re.I)
         if m:
-
-            valor = normalizar_numero(
-                m.group(1)
-            )
-
-            if valor and 20_000 <= valor <= 20_000_000:
-
+            valor = normalizar_numero(m.group(1))
+            if valor and PRECO_MIN <= valor <= PRECO_MAX:
                 return valor
 
     return None
 
-
-# ============================================================
-# EXTRAIR ÁREA
-# ============================================================
 
 def extrair_area(texto):
-
     if not texto:
         return None
 
     padroes = [
-
         r'(\d+(?:[\.,]\d+)?)\s*m²',
-
         r'(\d+(?:[\.,]\d+)?)\s*m2',
-
         r'área.{0,30}?(\d+(?:[\.,]\d+)?)',
-
     ]
 
     for padrao in padroes:
-
-        m = re.search(
-            padrao,
-            texto,
-            re.I
-        )
-
+        m = re.search(padrao, texto, re.I)
         if m:
-
-            valor = normalizar_numero(
-                m.group(1)
-            )
-
-            if valor and 10 <= valor <= 10_000:
-
+            valor = normalizar_numero(m.group(1))
+            if valor and AREA_MIN <= valor <= AREA_MAX:
                 return valor
 
     return None
 
 
-# ============================================================
-# EXTRAIR NÚMEROS
-# ============================================================
-
 def extrair_inteiro(texto, palavras):
-
+    """Procura um inteiro pequeno (0-10) associado a uma das `palavras`."""
     if not texto:
         return None
 
     for palavra in palavras:
-
         padroes = [
-
             rf'(\d+)\s*{palavra}',
-
             rf'{palavra}.{{0,15}}?(\d+)',
-
         ]
 
         for padrao in padroes:
-
-            m = re.search(
-                padrao,
-                texto,
-                re.I
-            )
-
+            m = re.search(padrao, texto, re.I)
             if m:
-
                 try:
-
-                    valor = int(
-                        m.group(1)
-                    )
-
-                    if 0 <= valor <= 10:
-
+                    valor = int(m.group(1))
+                    if NUMERO_MIN <= valor <= NUMERO_MAX:
                         return valor
-
-                except:
-
+                except ValueError:
                     pass
 
     return None
 
 
-# ============================================================
-# QUARTOS
-# ============================================================
-
 def extrair_quartos(texto):
+    return extrair_inteiro(texto, [r'quartos?', r'dormitórios?', r'dormitorios?', r'dorms?'])
 
-    return extrair_inteiro(
-        texto,
-        [
-            r'quartos?',
-            r'dormitórios?',
-            r'dormitorios?',
-            r'dorms?',
-        ]
-    )
-
-
-# ============================================================
-# BANHEIROS
-# ============================================================
 
 def extrair_banheiros(texto):
+    return extrair_inteiro(texto, [r'banheiros?', r'bwc', r'suítes?', r'suites?'])
 
-    return extrair_inteiro(
-        texto,
-        [
-            r'banheiros?',
-            r'bwc',
-            r'suítes?',
-            r'suites?',
-        ]
-    )
-
-
-# ============================================================
-# GARAGENS
-# ============================================================
 
 def extrair_garagens(texto):
-
-    return extrair_inteiro(
-        texto,
-        [
-            r'vagas?',
-            r'garagens?',
-        ]
-    )
+    return extrair_inteiro(texto, [r'vagas?', r'garagens?'])
 
 
 # ============================================================
-# IDENTIFICAR FONTE
+# IDENTIFICAR FONTE / TIPO
 # ============================================================
+
+FONTES_POR_DOMINIO = {
+    "imobiliariapenha": "Imobiliária Penha",
+    "h8imoveispenha": "H8 Imóveis",
+    "olegarioimoveis": "Olegário Imóveis",
+    "shsimoveis": "SHS Imóveis",
+    "solimoveis": "Sol Imóveis",
+    "praiaalegreimoveis": "Praia Alegre Imóveis",
+    "imobiliariabeatriz": "Imobiliária Beatriz",
+}
+
 
 def identificar_fonte(url):
+    dominio = urlparse(url).netloc.lower()
 
-    dominio = urlparse(
-        url
-    ).netloc.lower()
-
-    if "zapimoveis" in dominio:
-
-        return "ZAP Imóveis"
-
-    if "vivareal" in dominio:
-
-        return "Viva Real"
-
-    if "olx" in dominio:
-
-        return "OLX"
-
-    if "imovelweb" in dominio:
-
-        return "Imovelweb"
+    for chave, nome in FONTES_POR_DOMINIO.items():
+        if chave in dominio:
+            return nome
 
     return dominio
 
 
-# ============================================================
-# IDENTIFICAR TIPO
-# ============================================================
-
-def identificar_tipo(
-    titulo,
-    busca_tipo,
-    texto=""
-):
-
-    titulo_lower = (
-        titulo or ""
-    ).lower()
-
-    texto_lower = (
-        texto or ""
-    ).lower()
+PALAVRAS_TERRENO = ["terreno", "lote", "lotes"]
+PALAVRAS_APARTAMENTO = ["apartamento", "apto", "cobertura", "flat"]
+PALAVRAS_CASA = ["casa", "sobrado", "residência", "residencia"]
 
 
-    # --------------------------------------------------------
-    # PRIMEIRO: TÍTULO
-    # --------------------------------------------------------
+def identificar_tipo(titulo, busca_tipo, texto=""):
+    titulo_lower = (titulo or "").lower()
 
-    if any(
-        x in titulo_lower
-        for x in [
-            "terreno",
-            "lote",
-            "lotes"
-        ]
-    ):
-
+    # O título é mais confiável que o tipo da busca original.
+    if any(x in titulo_lower for x in PALAVRAS_TERRENO):
         return "Terreno"
 
-
-    if any(
-        x in titulo_lower
-        for x in [
-            "apartamento",
-            "apto",
-            "cobertura",
-            "flat"
-        ]
-    ):
-
+    if any(x in titulo_lower for x in PALAVRAS_APARTAMENTO):
         return "Apartamento"
 
-
-    if any(
-        x in titulo_lower
-        for x in [
-            "casa",
-            "sobrado",
-            "residência",
-            "residencia"
-        ]
-    ):
-
+    if any(x in titulo_lower for x in PALAVRAS_CASA):
         return "Casa"
 
-
-    # --------------------------------------------------------
-    # SEGUNDO: TIPO DA BUSCA
-    # --------------------------------------------------------
-
-    if busca_tipo in [
-        "Apartamento",
-        "Casa",
-        "Terreno"
-    ]:
-
+    if busca_tipo in ("Apartamento", "Casa", "Terreno"):
         return busca_tipo
-
 
     return None
 
 
 # ============================================================
-# VERIFICAR PÁGINA GENÉRICA
+# VERIFICAR PÁGINA GENÉRICA (listagem, busca, categoria)
 # ============================================================
 
-def pagina_generica(
-    titulo,
-    url
-):
+PADROES_TITULO_GENERICO = [
+    # Quantidade de imóveis
+    r'^\d+\s+apartamentos?',
+    r'^\d+\s+casas?',
+    r'^\d+\s+terrenos?',
+    r'^\d+\s+lotes?',
+    r'^\d+\s+.*à\s+venda',
 
-    titulo = (
-        titulo or ""
-    ).strip().lower()
+    # Categorias
+    r'^apartamentos?\s+(à|a)\s+venda',
+    r'^casas?\s+(à|a)\s+venda',
+    r'^terrenos?\s+(à|a)\s+venda',
+    r'^lotes?.*venda',
+    r'^apartamentos?\s+para\s+venda',
+    r'^casas?\s+para\s+venda',
+    r'^terrenos?\s+para\s+venda',
+    r'^apartamentos?\s+para\s+comprar',
+    r'^casas?\s+para\s+comprar',
 
-    url_lower = (
-        url or ""
-    ).lower()
+    # Imóveis
+    r'imóveis?\s+à\s+venda',
+    r'imoveis\s+à\s+venda',
+    r'imóveis?\s+para\s+venda',
+    r'imoveis\s+para\s+venda',
 
+    # Penha geral
+    r'^penha\s*-\s*sc$',
 
-    # --------------------------------------------------------
-    # TÍTULOS GENÉRICOS
-    # --------------------------------------------------------
+    # Resultados / listagens
+    r'imóveis encontrados',
+    r'imoveis encontrados',
+    r'^resultados',
+    r'^anúncios',
+    r'^anuncios',
+    r'^ofertas',
+    r'^classificados',
+    r'^página\s+\d+',
+    r'^pagina\s+\d+',
 
-    padroes_titulo = [
+    # Terrenos
+    r'lotes/terrenos\s+para\s+venda',
+    r'terrenos,\s*lotes',
 
-        # Quantidade de imóveis
-        r'^\d+\s+apartamentos?',
-        r'^\d+\s+casas?',
-        r'^\d+\s+terrenos?',
-        r'^\d+\s+lotes?',
+    # Outros
+    r'apartamentos\s+e\s+pousadas',
+]
 
-        # Categorias
-        r'^apartamentos?\s+(à|a)\s+venda',
-        r'^casas?\s+(à|a)\s+venda',
-        r'^terrenos?\s+(à|a)\s+venda',
-        r'^lotes?.*venda',
+PALAVRAS_URL_LISTAGEM = [
+    "/busca", "/search", "/resultado", "/resultados", "/filtro",
+    "/imoveis-a-venda", "/imoveis?", "/apartamentos?", "/casas?",
+    "/terrenos?", "/lotes?", "/venda?",
+]
 
-        r'^apartamentos?\s+para\s+venda',
-        r'^casas?\s+para\s+venda',
-        r'^terrenos?\s+para\s+venda',
-
-        r'^apartamentos?\s+para\s+comprar',
-        r'^casas?\s+para\s+comprar',
-
-        # Imóveis
-        r'imóveis?\s+à\s+venda',
-        r'imoveis\s+à\s+venda',
-
-        r'imóveis?\s+para\s+venda',
-        r'imoveis\s+para\s+venda',
-
-        # Penha geral
-        r'^penha\s*-\s*sc$',
-
-        # Resultados
-        r'imóveis encontrados',
-        r'imoveis encontrados',
-
-        r'^resultados',
-
-        # OLX
-        r'^anúncios',
-        r'^anuncios',
-
-        r'^ofertas',
-
-        r'^classificados',
-
-        # Páginas
-        r'^página\s+\d+',
-        r'^pagina\s+\d+',
-
-        # Terrenos
-        r'lotes/terrenos\s+para\s+venda',
-        r'terrenos,\s*lotes',
-
-        # Outros
-        r'apartamentos\s+e\s+pousadas',
-
-    ]
+PALAVRAS_URL_CONFIRMACAO = [
+    "filtro", "search", "busca", "result", "pagina", "page=", "tipo=",
+]
 
 
-    for padrao in padroes_titulo:
+def pagina_generica(titulo, url):
+    """True se o título/URL parecem ser de listagem, não de um imóvel."""
+    titulo = (titulo or "").strip().lower()
+    url_lower = (url or "").lower()
 
-        if re.search(
-            padrao,
-            titulo
-        ):
-
-            return True
-
-
-    # --------------------------------------------------------
-    # "X imóveis à venda"
-    # --------------------------------------------------------
-
-    if re.search(
-        r'^\d+\s+.*à\s+venda',
-        titulo
-    ):
-
+    if any(re.search(padrao, titulo) for padrao in PADROES_TITULO_GENERICO):
         return True
 
-
-    # --------------------------------------------------------
-    # URLs DE PESQUISA
-    # --------------------------------------------------------
-
-    palavras_url = [
-
-        "/busca",
-        "/search",
-        "/resultado",
-        "/resultados",
-        "/filtro",
-        "/imoveis-a-venda",
-        "/imoveis?",
-        "/apartamentos?",
-        "/casas?",
-        "/terrenos?",
-        "/lotes?",
-        "/venda?",
-
-    ]
-
-
-    for palavra in palavras_url:
-
-        if palavra in url_lower:
-
-            if any(
-                x in url_lower
-                for x in [
-                    "filtro",
-                    "search",
-                    "busca",
-                    "result",
-                    "pagina",
-                    "page=",
-                    "tipo=",
-                ]
-            ):
-
-                return True
-
+    for palavra in PALAVRAS_URL_LISTAGEM:
+        if palavra in url_lower and any(x in url_lower for x in PALAVRAS_URL_CONFIRMACAO):
+            return True
 
     return False
 
 
 # ============================================================
-# EXTRAIR JSON-LD
+# JSON-LD
 # ============================================================
 
-def extrair_jsonld(soup):
+TIPOS_JSONLD_GENERICOS = {"ItemList", "CollectionPage", "SearchResultsPage"}
 
+
+def extrair_jsonld(soup):
     resultados = []
 
-    scripts = soup.find_all(
-        "script",
-        type="application/ld+json"
-    )
-
-    for script in scripts:
-
+    for script in soup.find_all("script", type="application/ld+json"):
         try:
-
             conteudo = script.string
-
             if not conteudo:
                 continue
 
-            dados = json.loads(
-                conteudo
-            )
-
-            if isinstance(
-                dados,
-                list
-            ):
-
-                resultados.extend(
-                    dados
-                )
-
+            dados = json.loads(conteudo)
+            if isinstance(dados, list):
+                resultados.extend(dados)
             else:
-
-                resultados.append(
-                    dados
-                )
-
-        except:
-
+                resultados.append(dados)
+        except (json.JSONDecodeError, TypeError):
             continue
 
     return resultados
 
 
-# ============================================================
-# ANALISAR JSON-LD
-# ============================================================
+def _definir_se_ausente(dados, campo, valor):
+    """Preenche `campo` só se ainda não houver valor (primeiro bloco vence)."""
+    if valor is not None and dados.get(campo) is None:
+        dados[campo] = valor
 
-def analisar_jsonld(
-    jsonlds
-):
 
+def analisar_jsonld(jsonlds):
+    """Extrai dados estruturados dos blocos JSON-LD de uma página.
+
+    Quando há vários blocos, o primeiro com um dado válido vence — evita que
+    um schema secundário (ex.: Organization) sobrescreva o schema principal
+    do imóvel.
+    """
     dados = {}
 
     for item in jsonlds:
-
-        if not isinstance(
-            item,
-            dict
-        ):
-
+        if not isinstance(item, dict):
             continue
 
-
-        tipo = item.get(
-            "@type",
-            ""
-        )
-
-
-        # ----------------------------------------------------
-        # PÁGINA DE CATEGORIA
-        # ----------------------------------------------------
-
-        if tipo in [
-            "ItemList",
-            "CollectionPage",
-            "SearchResultsPage"
-        ]:
-
-            dados[
-                "generica"
-            ] = True
-
+        if item.get("@type", "") in TIPOS_JSONLD_GENERICOS:
+            dados["generica"] = True
             continue
 
+        _definir_se_ausente(dados, "titulo", item.get("name"))
 
-        # ----------------------------------------------------
-        # TÍTULO
-        # ----------------------------------------------------
+        # Preço: pode vir em offers (dict ou list) ou direto no item.
+        offers = item.get("offers")
+        preco = None
 
-        nome = item.get(
-            "name"
-        )
-
-        if nome and not dados.get(
-            "titulo"
-        ):
-
-            dados[
-                "titulo"
-            ] = nome
-
-
-        # ----------------------------------------------------
-        # PREÇO
-        # ----------------------------------------------------
-
-        offers = item.get(
-            "offers"
-        )
-
-
-        if isinstance(
-            offers,
-            dict
-        ):
-
-            preco = offers.get(
-                "price"
+        if isinstance(offers, dict):
+            preco = offers.get("price")
+        elif isinstance(offers, list):
+            preco = next(
+                (o.get("price") for o in offers if isinstance(o, dict) and o.get("price")),
+                None,
             )
+        if preco is None:
+            preco = item.get("price")
 
-            if preco:
+        _definir_se_ausente(dados, "preco", normalizar_numero(preco))
 
-                dados[
-                    "preco"
-                ] = normalizar_numero(
-                    preco
-                )
+        # Área
+        floor_size = item.get("floorSize")
+        if floor_size is not None:
+            valor = floor_size.get("value") if isinstance(floor_size, dict) else floor_size
+            _definir_se_ausente(dados, "area_m2", normalizar_numero(valor))
 
-
-        elif isinstance(
-            offers,
-            list
-        ):
-
-            for offer in offers:
-
-                if isinstance(
-                    offer,
-                    dict
-                ):
-
-                    preco = offer.get(
-                        "price"
-                    )
-
-                    if preco:
-
-                        dados[
-                            "preco"
-                        ] = normalizar_numero(
-                            preco
-                        )
-
-                        break
-
-
-        # Alguns sites colocam preço direto
-
-        if item.get(
-            "price"
-        ):
-
-            dados[
-                "preco"
-            ] = normalizar_numero(
-                item.get("price")
-            )
-
-
-        # ----------------------------------------------------
-        # ÁREA
-        # ----------------------------------------------------
-
-        if item.get(
-            "floorSize"
-        ):
-
-            fs = item[
-                "floorSize"
-            ]
-
-
-            if isinstance(
-                fs,
-                dict
-            ):
-
-                valor = fs.get(
-                    "value"
-                )
-
-            else:
-
-                valor = fs
-
-
-            dados[
-                "area_m2"
-            ] = normalizar_numero(
-                valor
-            )
-
-
-        # ----------------------------------------------------
-        # QUARTOS
-        # ----------------------------------------------------
-
-        for campo in [
-            "numberOfBedrooms",
-            "numberOfRooms"
-        ]:
-
-            if item.get(
-                campo
-            ) is not None:
-
+        # Quartos, banheiros, garagem
+        for campo_origem in ("numberOfBedrooms", "numberOfRooms"):
+            if item.get(campo_origem) is not None:
                 try:
-
-                    dados[
-                        "quartos"
-                    ] = int(
-                        item.get(
-                            campo
-                        )
-                    )
-
-                except:
-
+                    _definir_se_ausente(dados, "quartos", int(item[campo_origem]))
+                except (ValueError, TypeError):
                     pass
 
-
-        # ----------------------------------------------------
-        # BANHEIROS
-        # ----------------------------------------------------
-
-        if item.get(
-            "numberOfBathroomsTotal"
-        ) is not None:
-
+        if item.get("numberOfBathroomsTotal") is not None:
             try:
-
-                dados[
-                    "banheiros"
-                ] = int(
-                    item.get(
-                        "numberOfBathroomsTotal"
-                    )
-                )
-
-            except:
-
+                _definir_se_ausente(dados, "banheiros", int(item["numberOfBathroomsTotal"]))
+            except (ValueError, TypeError):
                 pass
 
-
-        # ----------------------------------------------------
-        # GARAGEM
-        # ----------------------------------------------------
-
-        if item.get(
-            "numberOfParkingSpaces"
-        ) is not None:
-
+        if item.get("numberOfParkingSpaces") is not None:
             try:
-
-                dados[
-                    "garagens"
-                ] = int(
-                    item.get(
-                        "numberOfParkingSpaces"
-                    )
-                )
-
-            except:
-
+                _definir_se_ausente(dados, "garagens", int(item["numberOfParkingSpaces"]))
+            except (ValueError, TypeError):
                 pass
 
-
-        # ----------------------------------------------------
-        # ENDEREÇO
-        # ----------------------------------------------------
-
-        endereco = item.get(
-            "address"
-        )
-
-
-        if isinstance(
-            endereco,
-            dict
-        ):
-
-            partes = []
-
-
-            for campo in [
-                "streetAddress",
-                "addressLocality",
-                "addressRegion"
-            ]:
-
-                if endereco.get(
-                    campo
-                ):
-
-                    partes.append(
-                        str(
-                            endereco[campo]
-                        )
-                    )
-
-
+        # Endereço
+        endereco = item.get("address")
+        if isinstance(endereco, dict):
+            partes = [
+                str(endereco[campo])
+                for campo in ("streetAddress", "addressLocality", "addressRegion")
+                if endereco.get(campo)
+            ]
             if partes:
-
-                dados[
-                    "endereco"
-                ] = ", ".join(
-                    partes
-                )
-
+                _definir_se_ausente(dados, "endereco", ", ".join(partes))
 
     return dados
 
 
 # ============================================================
-# BAIXAR PÁGINA
+# HTTP: PÁGINA DO ANÚNCIO / TAVILY
 # ============================================================
 
 def baixar_pagina(url):
-
     try:
-
-        headers = {
-
-            "User-Agent":
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/131.0 Safari/537.36"
-
-        }
-
-
-        resposta = requests.get(
-
-            url,
-
-            headers=headers,
-
-            timeout=20,
-
-            allow_redirects=True
-
-        )
-
+        resposta = sessao_web.get(url, timeout=20, allow_redirects=True)
 
         if resposta.status_code >= 400:
-
-            print(
-                f"    Página retornou HTTP "
-                f"{resposta.status_code}"
-            )
-
+            print(f"    Página retornou HTTP {resposta.status_code}")
             return None, None
 
-
-        soup = BeautifulSoup(
-
-            resposta.text,
-
-            "html.parser"
-
-        )
-
-
-        return soup, resposta.text
-
-
-    except Exception as e:
-
-        print(
-            f"    Erro ao acessar página: {e}"
-        )
-
+        return BeautifulSoup(resposta.text, "html.parser"), resposta.text
+    except requests.RequestException as e:
+        print(f"    Erro ao acessar página: {e}")
         return None, None
 
 
-# ============================================================
-# TAVILY
-# ============================================================
-
-def pesquisar_tavily(
-    query,
-    dominio
-):
-
+def pesquisar_tavily(query, dominio):
     try:
-
         response = requests.post(
-
             "https://api.tavily.com/search",
-
             json={
-
-                "api_key":
-                    TAVILY_API_KEY,
-
-                "query":
-                    query,
-
-                "search_depth":
-                    "basic",
-
-                "max_results":
-                    10,
-
-                "include_answer":
-                    False,
-
-                "include_domains":
-                    [dominio],
-
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "search_depth": "basic",
+                "max_results": 10,
+                "include_answer": False,
+                "include_domains": [dominio],
             },
-
-            timeout=60
-
+            timeout=60,
         )
-
-
         response.raise_for_status()
 
-
-        return response.json().get(
-            "results",
-            []
-        )
-
-
-    except Exception as e:
-
-        print(
-            f"Erro Tavily: {e}"
-        )
-
+        return response.json().get("results", [])
+    except requests.RequestException as e:
+        print(f"Erro Tavily: {e}")
         return []
 
 
 # ============================================================
-# VALIDAR DADOS
+# VALIDAÇÃO E QUALIDADE
 # ============================================================
 
-def validar_dados(
-    dados,
-    tipo
-):
-
-    preco = dados.get(
-        "preco"
-    )
-
-    area = dados.get(
-        "area_m2"
-    )
-
-    quartos = dados.get(
-        "quartos"
-    )
-
-    banheiros = dados.get(
-        "banheiros"
-    )
-
-    garagens = dados.get(
-        "garagens"
-    )
-
-
-    # --------------------------------------------------------
-    # TERRENO
-    # --------------------------------------------------------
-
+def validar_dados(dados, tipo):
+    """Zera campos fora de faixa ou incoerentes com o tipo do imóvel."""
     if tipo == "Terreno":
+        dados["quartos"] = None
+        dados["banheiros"] = None
+        dados["garagens"] = None
 
-        dados[
-            "quartos"
-        ] = None
+    area = dados.get("area_m2")
+    if tipo in ("Apartamento", "Casa") and area and area > AREA_MAX_CASA_APTO:
+        dados["area_m2"] = None
 
-        dados[
-            "banheiros"
-        ] = None
+    for campo in ("quartos", "banheiros", "garagens"):
+        valor = dados.get(campo)
+        if valor is not None and not (NUMERO_MIN <= valor <= NUMERO_MAX):
+            dados[campo] = None
 
-        dados[
-            "garagens"
-        ] = None
+    preco = dados.get("preco")
+    if preco is not None and not (PRECO_MIN <= preco <= PRECO_MAX):
+        dados["preco"] = None
 
-
-    # --------------------------------------------------------
-    # ÁREA
-    # --------------------------------------------------------
-
-    if tipo in [
-        "Apartamento",
-        "Casa"
-    ]:
-
-        if area and area > 1500:
-
-            dados[
-                "area_m2"
-            ] = None
-
-
-    # --------------------------------------------------------
-    # QUARTOS
-    # --------------------------------------------------------
-
-    if quartos is not None:
-
-        if quartos < 0 or quartos > 10:
-
-            dados[
-                "quartos"
-            ] = None
-
-
-    # --------------------------------------------------------
-    # BANHEIROS
-    # --------------------------------------------------------
-
-    if banheiros is not None:
-
-        if banheiros < 0 or banheiros > 10:
-
-            dados[
-                "banheiros"
-            ] = None
-
-
-    # --------------------------------------------------------
-    # GARAGENS
-    # --------------------------------------------------------
-
-    if garagens is not None:
-
-        if garagens < 0 or garagens > 10:
-
-            dados[
-                "garagens"
-            ] = None
-
-
-    # --------------------------------------------------------
-    # PREÇO
-    # --------------------------------------------------------
-
-    if preco is not None:
-
-        if (
-            preco < 20_000
-            or preco > 20_000_000
-        ):
-
-            dados[
-                "preco"
-            ] = None
-
-
-    # --------------------------------------------------------
-    # ÁREA
-    # --------------------------------------------------------
-
-    if area is not None:
-
-        if (
-            area < 10
-            or area > 10_000
-        ):
-
-            dados[
-                "area_m2"
-            ] = None
-
+    area = dados.get("area_m2")
+    if area is not None and not (AREA_MIN <= area <= AREA_MAX):
+        dados["area_m2"] = None
 
     return dados
 
 
-# ============================================================
-# CALCULAR QUALIDADE
-# ============================================================
+def calcular_qualidade(dados, veio_jsonld):
+    campos = ("preco", "area_m2", "quartos", "banheiros", "garagens")
+    preenchidos = sum(1 for campo in campos if dados.get(campo) is not None)
 
-def calcular_qualidade(
-    dados,
-    veio_jsonld
-):
-
-    campos = [
-
-        dados.get("preco"),
-
-        dados.get("area_m2"),
-
-        dados.get("quartos"),
-
-        dados.get("banheiros"),
-
-        dados.get("garagens"),
-
-    ]
-
-
-    preenchidos = sum(
-
-        1
-        for x in campos
-        if x is not None
-
-    )
-
-
-    # JSON-LD + pelo menos 3 dados
-
-    if (
-        veio_jsonld
-        and preenchidos >= 3
-    ):
-
+    if veio_jsonld and preenchidos >= 3:
         return "alta"
-
-
-    # Pelo menos 3 dados
-
     if preenchidos >= 3:
-
         return "media"
-
-
-    # Pelo menos 1 dado
-
     if preenchidos >= 1:
-
         return "baixa"
 
-
     return None
+
+
+# ============================================================
+# TIPO INCOMPATÍVEL COM A BUSCA
+# ============================================================
+
+PALAVRAS_POR_TIPO = {
+    "Terreno": ["apartamento", "apto", "casa", "sobrado"],
+    "Apartamento": ["terreno", "lote", "casa", "sobrado"],
+    "Casa": ["terreno", "lote", "apartamento", "apto"],
+}
+
+
+def tipo_incompativel(busca_tipo, titulo_lower):
+    palavras_proibidas = PALAVRAS_POR_TIPO.get(busca_tipo, [])
+    return any(x in titulo_lower for x in palavras_proibidas)
 
 
 # ============================================================
 # PROCESSAR RESULTADO
 # ============================================================
 
-def processar_resultado(
-    resultado,
-    busca_tipo
-):
-
-    url = resultado.get(
-        "url"
-    )
-
-
+def processar_resultado(resultado, busca_tipo):
+    url = resultado.get("url")
     if not url:
-
         return None
 
+    titulo_original = (resultado.get("title") or "").strip()
+    resumo = (resultado.get("content") or "").strip()
 
-    titulo_original = (
-        resultado.get("title")
-        or ""
-    ).strip()
-
-
-    resumo = (
-        resultado.get("content")
-        or ""
-    ).strip()
-
-
-    # --------------------------------------------------------
-    # TÍTULO NÃO PODE SER URL
-    # --------------------------------------------------------
-
-    if (
-        titulo_original.startswith(
-            "http://"
-        )
-        or
-        titulo_original.startswith(
-            "https://"
-        )
-    ):
-
+    # O título não pode ser a própria URL.
+    if titulo_original.startswith(("http://", "https://")):
         titulo_original = ""
 
-
-    # --------------------------------------------------------
-    # PRIMEIRO FILTRO
-    # --------------------------------------------------------
-
-    if pagina_generica(
-        titulo_original,
-        url
-    ):
-
-        print(
-            f"    IGNORADA: "
-            f"{titulo_original or url}"
-        )
-
+    if pagina_generica(titulo_original, url):
+        print(f"    IGNORADA: {titulo_original or url}")
         return None
 
-
-    # --------------------------------------------------------
-    # ABRIR PÁGINA
-    # --------------------------------------------------------
-
-    soup, html_text = baixar_pagina(
-        url
-    )
-
+    soup, _ = baixar_pagina(url)
 
     dados = {}
-
     veio_jsonld = False
-
     titulo = titulo_original
 
-
-    # --------------------------------------------------------
-    # JSON-LD
-    # --------------------------------------------------------
-
     if soup:
+        jsondados = analisar_jsonld(extrair_jsonld(soup))
 
-        jsonlds = extrair_jsonld(
-            soup
-        )
-
-
-        jsondados = analisar_jsonld(
-            jsonlds
-        )
-
-
-        # Página de categoria
-
-        if jsondados.get(
-            "generica"
-        ):
-
-            print(
-                "    IGNORADA: "
-                "página de categoria"
-            )
-
+        if jsondados.get("generica"):
+            print("    IGNORADA: página de categoria")
             return None
-
 
         if jsondados:
-
             veio_jsonld = True
+            dados.update({k: v for k, v in jsondados.items() if k != "generica"})
 
-
-            dados.update({
-
-                k: v
-
-                for k, v in jsondados.items()
-
-                if k != "generica"
-
-            })
-
-
-            if jsondados.get(
-                "titulo"
-            ):
-
-                titulo = str(
-                    jsondados["titulo"]
-                ).strip()
-
-
-    # --------------------------------------------------------
-    # SEM TÍTULO
-    # --------------------------------------------------------
+            if jsondados.get("titulo"):
+                titulo = str(jsondados["titulo"]).strip()
 
     if not titulo:
-
-        print(
-            "    IGNORADA: "
-            "sem título confiável"
-        )
-
+        print("    IGNORADA: sem título confiável")
         return None
 
-
-    # --------------------------------------------------------
-    # SEGUNDO FILTRO
-    # --------------------------------------------------------
-
-    if pagina_generica(
-        titulo,
-        url
-    ):
-
-        print(
-            f"    IGNORADA: {titulo}"
-        )
-
+    if pagina_generica(titulo, url):
+        print(f"    IGNORADA: {titulo}")
         return None
 
+    # Usamos apenas título + snippet (não a página inteira) para evitar
+    # misturar dados de vários imóveis listados na mesma página.
+    texto = f"{titulo} {resumo}"
 
-    # --------------------------------------------------------
-    # TEXTO PARA EXTRAÇÃO
-    #
-    # IMPORTANTE:
-    # usamos somente título + snippet
-    # para evitar pegar dados de vários imóveis
-    # existentes na mesma página.
-    # --------------------------------------------------------
+    if dados.get("preco") is None:
+        dados["preco"] = extrair_preco(texto)
+    if dados.get("area_m2") is None:
+        dados["area_m2"] = extrair_area(texto)
+    if dados.get("quartos") is None:
+        dados["quartos"] = extrair_quartos(texto)
+    if dados.get("banheiros") is None:
+        dados["banheiros"] = extrair_banheiros(texto)
+    if dados.get("garagens") is None:
+        dados["garagens"] = extrair_garagens(texto)
 
-    texto = (
-        f"{titulo} {resumo}"
-    )
-
-
-    # --------------------------------------------------------
-    # PREÇO
-    # --------------------------------------------------------
-
-    if dados.get(
-        "preco"
-    ) is None:
-
-        dados[
-            "preco"
-        ] = extrair_preco(
-            texto
-        )
-
-
-    # --------------------------------------------------------
-    # ÁREA
-    # --------------------------------------------------------
-
-    if dados.get(
-        "area_m2"
-    ) is None:
-
-        dados[
-            "area_m2"
-        ] = extrair_area(
-            texto
-        )
-
-
-    # --------------------------------------------------------
-    # QUARTOS
-    # --------------------------------------------------------
-
-    if dados.get(
-        "quartos"
-    ) is None:
-
-        dados[
-            "quartos"
-        ] = extrair_quartos(
-            texto
-        )
-
-
-    # --------------------------------------------------------
-    # BANHEIROS
-    # --------------------------------------------------------
-
-    if dados.get(
-        "banheiros"
-    ) is None:
-
-        dados[
-            "banheiros"
-        ] = extrair_banheiros(
-            texto
-        )
-
-
-    # --------------------------------------------------------
-    # GARAGENS
-    # --------------------------------------------------------
-
-    if dados.get(
-        "garagens"
-    ) is None:
-
-        dados[
-            "garagens"
-        ] = extrair_garagens(
-            texto
-        )
-
-
-    # --------------------------------------------------------
-    # TIPO
-    # --------------------------------------------------------
-
-    tipo = identificar_tipo(
-
-        titulo,
-
-        busca_tipo,
-
-        texto
-
-    )
-
-
+    tipo = identificar_tipo(titulo, busca_tipo, texto)
     if not tipo:
-
-        print(
-            "    IGNORADA: "
-            "tipo não identificado"
-        )
-
+        print("    IGNORADA: tipo não identificado")
         return None
 
-
-    titulo_lower = titulo.lower()
-
-
-    # --------------------------------------------------------
-    # NÃO ACEITAR TIPO ERRADO
-    # --------------------------------------------------------
-
-    if busca_tipo == "Terreno":
-
-        if any(
-
-            x in titulo_lower
-
-            for x in [
-
-                "apartamento",
-                "apto",
-                "casa",
-                "sobrado",
-
-            ]
-
-        ):
-
-            print(
-                "    IGNORADA: "
-                "tipo incompatível"
-            )
-
-            return None
-
-
-    if busca_tipo == "Apartamento":
-
-        if any(
-
-            x in titulo_lower
-
-            for x in [
-
-                "terreno",
-                "lote",
-                "casa",
-                "sobrado",
-
-            ]
-
-        ):
-
-            print(
-                "    IGNORADA: "
-                "tipo incompatível"
-            )
-
-            return None
-
-
-    if busca_tipo == "Casa":
-
-        if any(
-
-            x in titulo_lower
-
-            for x in [
-
-                "terreno",
-                "lote",
-                "apartamento",
-                "apto",
-
-            ]
-
-        ):
-
-            print(
-                "    IGNORADA: "
-                "tipo incompatível"
-            )
-
-            return None
-
-
-    # --------------------------------------------------------
-    # VALIDAÇÃO
-    # --------------------------------------------------------
-
-    dados = validar_dados(
-
-        dados,
-
-        tipo
-
-    )
-
-
-    # --------------------------------------------------------
-    # QUALIDADE
-    # --------------------------------------------------------
-
-    qualidade = calcular_qualidade(
-
-        dados,
-
-        veio_jsonld
-
-    )
-
-
-    # --------------------------------------------------------
-    # SEM PREÇO E SEM ÁREA
-    # --------------------------------------------------------
-
-    if (
-
-        dados.get("preco") is None
-
-        and
-
-        dados.get("area_m2") is None
-
-    ):
-
-        print(
-            "    IGNORADA: "
-            "sem preço ou área"
-        )
-
+    if tipo_incompativel(busca_tipo, titulo.lower()):
+        print("    IGNORADA: tipo incompatível")
         return None
 
+    dados = validar_dados(dados, tipo)
+    qualidade = calcular_qualidade(dados, veio_jsonld)
 
-    # --------------------------------------------------------
-    # BAIRRO
-    # --------------------------------------------------------
-
-    bairro = None
+    if dados.get("preco") is None and dados.get("area_m2") is None:
+        print("    IGNORADA: sem preço ou área")
+        return None
 
     texto_lower = texto.lower()
+    bairro = "Armação" if ("armação" in texto_lower or "armacao" in texto_lower) else None
 
-
-    if (
-        "armação" in texto_lower
-        or
-        "armacao" in texto_lower
-    ):
-
-        bairro = "Armação"
-
-
-    # --------------------------------------------------------
-    # IMÓVEL FINAL
-    # --------------------------------------------------------
-
-    imovel = {
-
-        "url":
-            url,
-
-        "fonte":
-            identificar_fonte(url),
-
-        "titulo":
-            titulo[:500],
-
-        "tipo":
-            tipo,
-
-        "preco":
-            dados.get("preco"),
-
-        "area_m2":
-            dados.get("area_m2"),
-
-        "quartos":
-            dados.get("quartos"),
-
-        "banheiros":
-            dados.get("banheiros"),
-
-        "garagens":
-            dados.get("garagens"),
-
-        "endereco":
-            dados.get("endereco"),
-
-        "bairro":
-            bairro,
-
-        "descricao":
-            resumo[:3000],
-
-        "qualidade_dados":
-            qualidade,
-
-        "ativo":
-            True,
-
+    return {
+        "url": url,
+        "fonte": identificar_fonte(url),
+        "titulo": titulo[:500],
+        "tipo": tipo,
+        "preco": dados.get("preco"),
+        "area_m2": dados.get("area_m2"),
+        "quartos": dados.get("quartos"),
+        "banheiros": dados.get("banheiros"),
+        "garagens": dados.get("garagens"),
+        "endereco": dados.get("endereco"),
+        "bairro": bairro,
+        "descricao": resumo[:3000],
+        "qualidade_dados": qualidade,
+        "ativo": True,
     }
 
 
-    return imovel
-
-
 # ============================================================
-# HEADERS SUPABASE
+# SUPABASE
 # ============================================================
 
 def headers_supabase():
-
     return {
-
-        "apikey":
-            SUPABASE_SECRET_KEY,
-
-        "Authorization":
-            f"Bearer {SUPABASE_SECRET_KEY}",
-
-        "Content-Type":
-            "application/json",
-
-        "Prefer":
-            "return=minimal",
-
+        "apikey": SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
     }
 
 
-# ============================================================
-# SALVAR IMÓVEL
-# ============================================================
-
-def salvar_imovel(
-    imovel
-):
-
-    url_base = (
-
-        SUPABASE_URL.rstrip("/")
-
-        + "/rest/v1/"
-
-        + SUPABASE_TABLE
-
-    )
-
-
+def salvar_imovel(imovel):
+    """Insere o imóvel, ou atualiza se a URL já existir na tabela."""
+    url_base = SUPABASE_URL.rstrip("/") + "/rest/v1/" + SUPABASE_TABLE
     headers = headers_supabase()
 
-
-    # ========================================================
-    # VERIFICAR SE URL JÁ EXISTE
-    # ========================================================
-
     try:
-
         busca = requests.get(
-
             url_base,
-
             headers=headers,
-
-            params={
-
-                "url":
-                    "eq." + imovel["url"],
-
-                "select":
-                    "id"
-
-            },
-
-            timeout=30
-
+            params={"url": "eq." + imovel["url"], "select": "id"},
+            timeout=30,
         )
-
-
-        # ----------------------------------------------------
-        # VERIFICAR ERRO HTTP
-        # ----------------------------------------------------
 
         if busca.status_code >= 300:
-
-            print(
-                "    Erro consultando Supabase:",
-                busca.status_code
-            )
-
-            print(
-                "    Resposta:",
-                busca.text[:1000]
-            )
-
+            print("    Erro consultando Supabase:", busca.status_code)
+            print("    Resposta:", busca.text[:1000])
             return False
-
-
-        # ----------------------------------------------------
-        # CONVERTER JSON
-        # ----------------------------------------------------
 
         existentes = busca.json()
-
-
-        # ----------------------------------------------------
-        # GARANTIR QUE É UMA LISTA
-        # ----------------------------------------------------
-
-        if not isinstance(
-            existentes,
-            list
-        ):
-
-            print(
-                "    Resposta inesperada "
-                "do Supabase:"
-            )
-
-            print(
-                str(existentes)[:1000]
-            )
-
+        if not isinstance(existentes, list):
+            print("    Resposta inesperada do Supabase:")
+            print(str(existentes)[:1000])
             return False
-
-
-    except Exception as e:
-
-        print(
-            f"    Erro verificando imóvel: {e}"
-        )
-
+    except requests.RequestException as e:
+        print(f"    Erro verificando imóvel: {e}")
         return False
 
-
-    # ========================================================
-    # ATUALIZAR IMÓVEL EXISTENTE
-    # ========================================================
-
-    if len(existentes) > 0:
-
-        id_imovel = existentes[0].get(
-            "id"
-        )
-
-
+    if existentes:
+        id_imovel = existentes[0].get("id")
         if not id_imovel:
-
-            print(
-                "    Imóvel encontrado, "
-                "mas sem ID."
-            )
-
+            print("    Imóvel encontrado, mas sem ID.")
             return False
-
 
         try:
-
             resposta = requests.patch(
-
                 url_base,
-
                 headers=headers,
-
-                params={
-
-                    "id":
-                        f"eq.{id_imovel}"
-
-                },
-
+                params={"id": f"eq.{id_imovel}"},
                 json=imovel,
-
-                timeout=30
-
+                timeout=30,
             )
-
-
-            if resposta.status_code >= 300:
-
-                print(
-                    "    Erro PATCH:",
-                    resposta.status_code
-                )
-
-                print(
-                    resposta.text[:1000]
-                )
-
-                return False
-
-
-            return True
-
-
-        except Exception as e:
-
-            print(
-                f"    Erro PATCH: {e}"
-            )
-
+        except requests.RequestException as e:
+            print(f"    Erro PATCH: {e}")
             return False
-
-
-    # ========================================================
-    # INSERIR NOVO IMÓVEL
-    # ========================================================
-
-    try:
-
-        resposta = requests.post(
-
-            url_base,
-
-            headers=headers,
-
-            json=imovel,
-
-            timeout=30
-
-        )
-
 
         if resposta.status_code >= 300:
-
-            print(
-                "    Erro POST:",
-                resposta.status_code
-            )
-
-            print(
-                resposta.text[:1000]
-            )
-
+            print("    Erro PATCH:", resposta.status_code)
+            print(resposta.text[:1000])
             return False
-
 
         return True
 
-
-    except Exception as e:
-
-        print(
-            f"    Erro POST: {e}"
-        )
-
+    try:
+        resposta = requests.post(url_base, headers=headers, json=imovel, timeout=30)
+    except requests.RequestException as e:
+        print(f"    Erro POST: {e}")
         return False
+
+    if resposta.status_code >= 300:
+        print("    Erro POST:", resposta.status_code)
+        print(resposta.text[:1000])
+        return False
+
+    return True
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
+def validar_configuracao():
+    faltando = [
+        nome
+        for nome, valor in (
+            ("TAVILY_API_KEY", TAVILY_API_KEY),
+            ("SUPABASE_URL", SUPABASE_URL),
+            ("SUPABASE_SECRET_KEY", SUPABASE_SECRET_KEY),
+        )
+        if not valor
+    ]
+
+    if faltando:
+        raise SystemExit(
+            "Variáveis de ambiente ausentes: " + ", ".join(faltando)
+        )
+
+
+def mostrar_imovel(imovel):
+    print(f"    Tipo: {imovel.get('tipo')}")
+    print(f"    Preço: {imovel.get('preco')}")
+    print(f"    Área: {imovel.get('area_m2')}")
+    print(f"    Quartos: {imovel.get('quartos')}")
+    print(f"    Banheiros: {imovel.get('banheiros')}")
+    print(f"    Garagens: {imovel.get('garagens')}")
+    print(f"    Fonte: {imovel.get('fonte')}")
+    print(f"    Qualidade: {imovel.get('qualidade_dados')}")
+
+
 def main():
+    validar_configuracao()
 
     print("=" * 70)
-
-    print(
-        "RADAR DE IMÓVEIS - "
-        "PENHA / ARMAÇÃO"
-    )
-
-    print(
-        "VERSÃO 6"
-    )
-
+    print("RADAR DE IMÓVEIS - PENHA / ARMAÇÃO")
+    print("VERSÃO 7")
     print("=" * 70)
-
-
-    # --------------------------------------------------------
-    # CONTROLE DE DUPLICADOS
-    # --------------------------------------------------------
 
     urls_processadas = set()
-
-
-    analisados = 0
-
-    salvos = 0
-
-    ignorados = 0
-
-
-    # ========================================================
-    # LOOP DAS BUSCAS
-    # ========================================================
+    analisados = salvos = ignorados = 0
 
     for tipo, consulta, dominio in BUSCAS:
-
-
-        query = (
-            f"{consulta} "
-            f"site:{dominio}"
-        )
-
+        query = f"{consulta} site:{dominio}"
 
         print()
-
+        print("=" * 70)
+        print(f"BUSCANDO: {tipo}")
+        print(f"SITE: {dominio}")
         print("=" * 70)
 
-        print(
-            f"BUSCANDO: {tipo}"
-        )
-
-        print(
-            f"SITE: {dominio}"
-        )
-
-        print("=" * 70)
-
-
-        resultados = pesquisar_tavily(
-
-            query,
-
-            dominio
-
-        )
-
-
-        print(
-            f"Resultados encontrados: "
-            f"{len(resultados)}"
-        )
-
-
-        # ====================================================
-        # RESULTADOS
-        # ====================================================
+        resultados = pesquisar_tavily(query, dominio)
+        print(f"Resultados encontrados: {len(resultados)}")
 
         for resultado in resultados:
-
-
-            url = resultado.get(
-                "url"
-            )
-
-
+            url = resultado.get("url")
             if not url:
-
                 ignorados += 1
-
                 continue
-
-
-            # ------------------------------------------------
-            # DUPLICADO
-            # ------------------------------------------------
 
             if url in urls_processadas:
-
-                print(
-                    "    DUPLICADO:"
-                    f" {url}"
-                )
-
+                print(f"    DUPLICADO: {url}")
                 continue
 
-
-            urls_processadas.add(
-                url
-            )
-
-
+            urls_processadas.add(url)
             analisados += 1
 
-
-            titulo = (
-
-                resultado.get(
-                    "title"
-                )
-
-                or
-
-                url
-
-            )
-
-
             print()
+            print(f"    Analisando: {resultado.get('title') or url}")
 
-            print(
-                f"    Analisando: "
-                f"{titulo}"
-            )
-
-
-            # ------------------------------------------------
-            # PROCESSAR
-            # ------------------------------------------------
-
-            imovel = processar_resultado(
-
-                resultado,
-
-                tipo
-
-            )
-
-
+            imovel = processar_resultado(resultado, tipo)
             if not imovel:
-
                 ignorados += 1
-
                 continue
 
+            mostrar_imovel(imovel)
 
-            # ------------------------------------------------
-            # MOSTRAR DADOS
-            # ------------------------------------------------
-
-            print(
-                f"    Tipo: "
-                f"{imovel.get('tipo')}"
-            )
-
-
-            print(
-                f"    Preço: "
-                f"{imovel.get('preco')}"
-            )
-
-
-            print(
-                f"    Área: "
-                f"{imovel.get('area_m2')}"
-            )
-
-
-            print(
-                f"    Quartos: "
-                f"{imovel.get('quartos')}"
-            )
-
-
-            print(
-                f"    Banheiros: "
-                f"{imovel.get('banheiros')}"
-            )
-
-
-            print(
-                f"    Garagens: "
-                f"{imovel.get('garagens')}"
-            )
-
-
-            print(
-                f"    Fonte: "
-                f"{imovel.get('fonte')}"
-            )
-
-
-            print(
-                f"    Qualidade: "
-                f"{imovel.get('qualidade_dados')}"
-            )
-
-
-            # ------------------------------------------------
-            # SALVAR
-            # ------------------------------------------------
-
-            if salvar_imovel(
-                imovel
-            ):
-
-                print(
-                    "    ✓ Salvo/atualizado"
-                )
-
+            if salvar_imovel(imovel):
+                print("    ✓ Salvo/atualizado")
                 salvos += 1
-
-
             else:
-
-                print(
-                    "    ✗ Erro ao salvar"
-                )
-
-
-    # ========================================================
-    # FINAL
-    # ========================================================
+                print("    ✗ Erro ao salvar")
 
     print()
-
+    print("=" * 70)
+    print("RADAR FINALIZADO")
+    print("=" * 70)
+    print(f"Resultados analisados: {analisados}")
+    print(f"Imóveis salvos/atualizados: {salvos}")
+    print(f"Ignorados: {ignorados}")
     print("=" * 70)
 
-    print(
-        "RADAR FINALIZADO"
-    )
-
-    print("=" * 70)
-
-
-    print(
-        f"Resultados analisados: "
-        f"{analisados}"
-    )
-
-
-    print(
-        f"Imóveis salvos/atualizados: "
-        f"{salvos}"
-    )
-
-
-    print(
-        f"Ignorados: "
-        f"{ignorados}"
-    )
-
-
-    print("=" * 70)
-
-
-# ============================================================
-# EXECUTAR
-# ============================================================
 
 if __name__ == "__main__":
-
     main()
