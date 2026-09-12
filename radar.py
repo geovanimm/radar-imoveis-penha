@@ -52,7 +52,6 @@ sessao_web.headers.update({"User-Agent": USER_AGENT})
 QUERIES_POR_TIPO = {
     "Apartamento": 'apartamento venda "Armação" Penha SC',
     "Casa": 'casa venda "Armação" Penha SC',
-    "Terreno": 'terreno lote venda "Armação" Penha SC',
 }
 
 # Imobiliárias com site próprio em Penha-SC que anunciam a região da
@@ -212,17 +211,18 @@ PALAVRAS_CASA = ["casa", "sobrado", "residência", "residencia"]
 def identificar_tipo(titulo, busca_tipo, texto=""):
     titulo_lower = (titulo or "").lower()
 
-    # O título é mais confiável que o tipo da busca original.
+    # Não trabalhamos mais com terrenos/lotes.
     if any(x in titulo_lower for x in PALAVRAS_TERRENO):
-        return "Terreno"
+        return None
 
+    # O título é mais confiável que o tipo da busca original.
     if any(x in titulo_lower for x in PALAVRAS_APARTAMENTO):
         return "Apartamento"
 
     if any(x in titulo_lower for x in PALAVRAS_CASA):
         return "Casa"
 
-    if busca_tipo in ("Apartamento", "Casa", "Terreno"):
+    if busca_tipo in ("Apartamento", "Casa"):
         return busca_tipo
 
     return None
@@ -236,19 +236,14 @@ PADROES_TITULO_GENERICO = [
     # Quantidade de imóveis
     r'^\d+\s+apartamentos?',
     r'^\d+\s+casas?',
-    r'^\d+\s+terrenos?',
-    r'^\d+\s+lotes?',
     r'^\d+\s+.*à\s+venda',
 
     # Categorias (só no plural: no singular é assim que a Imobiliária
     # Beatriz nomeia os anúncios individuais, ex.: "Casa à venda, Penha - SC")
     r'^apartamentos\s+(à|a)\s+venda',
     r'^casas\s+(à|a)\s+venda',
-    r'^terrenos\s+(à|a)\s+venda',
-    r'^lotes.*venda',
     r'^apartamentos\s+para\s+venda',
     r'^casas\s+para\s+venda',
-    r'^terrenos\s+para\s+venda',
     r'^apartamentos\s+para\s+comprar',
     r'^casas\s+para\s+comprar',
 
@@ -272,18 +267,13 @@ PADROES_TITULO_GENERICO = [
     r'^página\s+\d+',
     r'^pagina\s+\d+',
 
-    # Terrenos
-    r'lotes/terrenos\s+para\s+venda',
-    r'terrenos,\s*lotes',
-
     # Outros
     r'apartamentos\s+e\s+pousadas',
 ]
 
 PALAVRAS_URL_LISTAGEM = [
     "/busca", "/search", "/resultado", "/resultados", "/filtro",
-    "/imoveis-a-venda", "/imoveis?", "/apartamentos?", "/casas?",
-    "/terrenos?", "/lotes?", "/venda?",
+    "/imoveis-a-venda", "/imoveis?", "/apartamentos?", "/casas?", "/venda?",
 ]
 
 PALAVRAS_URL_CONFIRMACAO = [
@@ -464,11 +454,6 @@ def pesquisar_tavily(query, dominio):
 
 def validar_dados(dados, tipo):
     """Zera campos fora de faixa ou incoerentes com o tipo do imóvel."""
-    if tipo == "Terreno":
-        dados["quartos"] = None
-        dados["banheiros"] = None
-        dados["garagens"] = None
-
     area = dados.get("area_m2")
     if tipo in ("Apartamento", "Casa") and area and area > AREA_MAX_CASA_APTO:
         dados["area_m2"] = None
@@ -531,7 +516,6 @@ def menciona_outra_uf(texto):
 # ============================================================
 
 PALAVRAS_POR_TIPO = {
-    "Terreno": ["apartamento", "apto", "casa", "sobrado"],
     "Apartamento": ["terreno", "lote", "casa", "sobrado"],
     "Casa": ["terreno", "lote", "apartamento", "apto"],
 }
