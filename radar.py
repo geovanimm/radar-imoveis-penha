@@ -50,11 +50,18 @@ QUERIES_POR_TIPO = {
     "Terreno": 'terreno lote venda "Armação" Penha SC',
 }
 
+# Imobiliárias com site próprio em Penha-SC que anunciam a região da
+# Armação (confirmadas manualmente). Portais genéricos (OLX, ZAP, Viva
+# Real, Imovelweb) foram removidos: traziam muito ruído de fora do
+# público-alvo (imóveis de outras cidades, classificados não verificados).
 SITES = [
-    "zapimoveis.com.br",
-    "vivareal.com.br",
-    "olx.com.br",
-    "imovelweb.com.br",
+    "imobiliariapenha.com.br",
+    "h8imoveispenha.com.br",
+    "olegarioimoveis.com.br",
+    "shsimoveis.com",
+    "solimoveis.com.br",
+    "praiaalegreimoveis.com",
+    "imobiliariabeatriz.com.br",
 ]
 
 BUSCAS = [
@@ -172,10 +179,13 @@ def extrair_garagens(texto):
 # ============================================================
 
 FONTES_POR_DOMINIO = {
-    "zapimoveis": "ZAP Imóveis",
-    "vivareal": "Viva Real",
-    "olx": "OLX",
-    "imovelweb": "Imovelweb",
+    "imobiliariapenha": "Imobiliária Penha",
+    "h8imoveispenha": "H8 Imóveis",
+    "olegarioimoveis": "Olegário Imóveis",
+    "shsimoveis": "SHS Imóveis",
+    "solimoveis": "Sol Imóveis",
+    "praiaalegreimoveis": "Praia Alegre Imóveis",
+    "imobiliariabeatriz": "Imobiliária Beatriz",
 }
 
 
@@ -715,7 +725,7 @@ def main():
 
     print("=" * 70)
     print("RADAR DE IMÓVEIS - PENHA / ARMAÇÃO")
-    print("VERSÃO 6")
+    print("VERSÃO 7")
     print("=" * 70)
 
     urls_processadas = set()
