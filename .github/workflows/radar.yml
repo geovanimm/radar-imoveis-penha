@@ -30,5 +30,8 @@ jobs:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          # Opcional: sem esse secret configurado, o campo observacao_ia
+          # dos imóveis novos fica vazio (sem custo, sem erro).
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LIMPAR_TABELA_ANTES: ${{ inputs.limpar_tabela }}
         run: python radar.py

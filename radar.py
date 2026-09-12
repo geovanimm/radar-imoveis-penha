@@ -21,6 +21,11 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 
+# Opcional: gera um comentário da IA sobre cada imóvel novo (ver
+# gerar_observacao_ia). Sem essa chave, o campo fica sempre vazio.
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+
 SUPABASE_TABLE = "imoveis"
 
 USER_AGENT = (
@@ -646,6 +651,79 @@ def processar_resultado(resultado, busca_tipo):
 
 
 # ============================================================
+# OBSERVAÇÃO DA IA
+# ============================================================
+# Recurso opcional: sem ANTHROPIC_API_KEY configurada, o campo
+# observacao_ia simplesmente fica vazio, sem custo nem erro.
+
+def gerar_observacao_ia(imovel):
+    """Pede à IA uma opinião curta sobre o imóvel.
+
+    Chamada só uma vez por imóvel (ver salvar_imovel — apenas no
+    momento da inserção), pra não pagar de novo pelo mesmo imóvel a
+    cada execução do radar.
+    """
+    if not ANTHROPIC_API_KEY:
+        return None
+
+    valor_m2 = None
+    if imovel.get("preco") and imovel.get("area_m2"):
+        valor_m2 = round(imovel["preco"] / imovel["area_m2"])
+
+    prompt = (
+        "Você avalia anúncios de imóveis à venda no bairro Armação, "
+        "Penha/SC. Dados do imóvel:\n"
+        f"- Tipo: {imovel.get('tipo')}\n"
+        f"- Preço: R$ {imovel.get('preco')}\n"
+        f"- Área: {imovel.get('area_m2')} m²\n"
+        f"- Valor por m²: R$ {valor_m2}\n"
+        f"- Quartos: {imovel.get('quartos')}\n"
+        f"- Banheiros: {imovel.get('banheiros')}\n"
+        f"- Vagas de garagem: {imovel.get('garagens')}\n"
+        f"- Endereço: {imovel.get('endereco')}\n"
+        f"- Título do anúncio: {imovel.get('titulo')}\n"
+        f"- Descrição: {(imovel.get('descricao') or '')[:1000]}\n\n"
+        "Em até 2 frases curtas, em português, dê uma opinião objetiva: "
+        "se os dados sugerem bom custo-benefício, algo suspeito ou "
+        "incompleto, ou algum destaque relevante. Não invente dados que "
+        "não estejam listados acima."
+    )
+
+    try:
+        resposta = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": ANTHROPIC_MODEL,
+                "max_tokens": 200,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        print(f"    Erro ao gerar observação da IA: {e}")
+        return None
+
+    if resposta.status_code >= 300:
+        print("    Erro ao gerar observação da IA:", resposta.status_code)
+        print(resposta.text[:500])
+        return None
+
+    try:
+        blocos = resposta.json().get("content", [])
+        texto = "".join(b.get("text", "") for b in blocos if isinstance(b, dict))
+    except (ValueError, AttributeError):
+        return None
+
+    texto = texto.strip()
+    return texto[:500] if texto else None
+
+
+# ============================================================
 # SUPABASE
 # ============================================================
 
@@ -709,6 +787,10 @@ def salvar_imovel(imovel):
             return False
 
         return True
+
+    observacao = gerar_observacao_ia(imovel)
+    if observacao:
+        imovel["observacao_ia"] = observacao
 
     try:
         resposta = requests.post(url_base, headers=headers, json=imovel, timeout=30)
