@@ -1,7 +1,8 @@
-"""Radar de imóveis à venda no bairro Armação, Penha/SC.
+"""Radar de imóveis à venda em regiões configuradas (bairro + cidade).
 
 Busca anúncios via Tavily, extrai dados (preço, área, quartos...) das
 páginas encontradas e mantém a tabela `imoveis` no Supabase sincronizada.
+Regiões atuais: Armação (Penha/SC) e Carijós (Indaial/SC) — ver REGIOES.
 """
 
 import os
@@ -45,33 +46,58 @@ sessao_web.headers.update({"User-Agent": USER_AGENT})
 
 
 # ============================================================
-# BUSCAS
+# REGIÕES
 # ============================================================
-# Uma busca por combinação (tipo de imóvel x site). Bairro fixo: Armação.
+# Cada região é um bairro dentro de uma cidade, com suas próprias
+# imobiliárias locais (site próprio, confirmadas manualmente), um teto
+# de preço opcional (None = sem teto) e as palavras usadas pra confirmar
+# que um resultado é mesmo dessa região/bairro.
 
-QUERIES_POR_TIPO = {
-    "Apartamento": 'apartamento venda "Armação" Penha SC',
-    "Casa": 'casa venda "Armação" Penha SC',
-}
-
-# Imobiliárias com site próprio em Penha-SC que anunciam a região da
-# Armação (confirmadas manualmente). Portais genéricos (OLX, ZAP, Viva
-# Real, Imovelweb) foram removidos: traziam muito ruído de fora do
-# público-alvo (imóveis de outras cidades, classificados não verificados).
-SITES = [
-    "imobiliariapenha.com.br",
-    "h8imoveispenha.com.br",
-    "olegarioimoveis.com.br",
-    "shsimoveis.com",
-    "solimoveis.com.br",
-    "praiaalegreimoveis.com",
-    "imobiliariabeatriz.com.br",
+REGIOES = [
+    {
+        "cidade": "Penha",
+        "bairro": "Armação",
+        "preco_max": 700_000,
+        "palavras_regiao": ["penha", "armação", "armacao"],
+        "palavras_bairro": ["armação", "armacao"],
+        "sites": [
+            "imobiliariapenha.com.br",
+            "h8imoveispenha.com.br",
+            "olegarioimoveis.com.br",
+            "shsimoveis.com",
+            "solimoveis.com.br",
+            "praiaalegreimoveis.com",
+            "imobiliariabeatriz.com.br",
+        ],
+    },
+    {
+        "cidade": "Indaial",
+        "bairro": "Carijós",
+        "preco_max": None,
+        "palavras_regiao": ["indaial", "carijós", "carijos"],
+        "palavras_bairro": ["carijós", "carijos"],
+        "sites": [
+            "mauroimoveis.imb.br",
+            "schorkimoveis.com.br",
+            "imobiliariahoje.com.br",
+            "imobiliariamapa.com.br",
+            "mettaimobi.com.br",
+            "liderimobiliaria.net",
+            "shsimoveis.com",
+        ],
+    },
 ]
 
+TIPOS_QUERY = {
+    "Apartamento": "apartamento venda",
+    "Casa": "casa venda",
+}
+
 BUSCAS = [
-    (tipo, query, site)
-    for tipo, query in QUERIES_POR_TIPO.items()
-    for site in SITES
+    (tipo, f'{consulta_base} "{regiao["bairro"]}" {regiao["cidade"]} SC', site, regiao)
+    for regiao in REGIOES
+    for tipo, consulta_base in TIPOS_QUERY.items()
+    for site in regiao["sites"]
 ]
 
 
@@ -80,18 +106,19 @@ BUSCAS = [
 # ============================================================
 
 def normalizar_numero(valor):
-    """Converte strings como 'R$ 590.000,00' ou '590.000' em float."""
+    """Converte strings como 'R$ 590.000,00' ou '1.200.000' em float."""
     if valor is None:
         return None
 
     try:
         valor = str(valor).replace("R$", "").replace("m²", "").replace("m2", "").strip()
 
-        # Exemplos: "590.000,00" | "590.000" | "590000"
+        # Exemplos: "590.000,00" | "590.000" | "1.200.000" | "590000"
         if "," in valor:
             valor = valor.replace(".", "").replace(",", ".")
-        elif valor.count(".") == 1 and len(valor.split(".")[1]) == 3:
-            # "." usado como separador de milhar (ex: "590.000")
+        elif re.fullmatch(r"\d{1,3}(\.\d{3})+", valor):
+            # "." usado como separador de milhar — cobre qualquer
+            # quantidade de grupos de milhar (ex: "590.000", "1.200.000").
             valor = valor.replace(".", "")
 
         return float(valor)
@@ -190,6 +217,12 @@ FONTES_POR_DOMINIO = {
     "solimoveis": "Sol Imóveis",
     "praiaalegreimoveis": "Praia Alegre Imóveis",
     "imobiliariabeatriz": "Imobiliária Beatriz",
+    "mauroimoveis": "Mauro Imóveis",
+    "schorkimoveis": "Schork Imóveis",
+    "imobiliariahoje": "Imobiliária Hoje",
+    "imobiliariamapa": "Mapa Imobiliária",
+    "mettaimobi": "Metta Negócios Imobiliários",
+    "liderimobiliaria": "Líder Imobiliária",
 }
 
 
@@ -530,7 +563,7 @@ def tipo_incompativel(busca_tipo, titulo_lower):
 # PROCESSAR RESULTADO
 # ============================================================
 
-def processar_resultado(resultado, busca_tipo):
+def processar_resultado(resultado, busca_tipo, regiao):
     url = resultado.get("url")
     if not url:
         return None
@@ -579,8 +612,8 @@ def processar_resultado(resultado, busca_tipo):
     texto = f"{titulo} {resumo}"
     texto_lower = texto.lower()
 
-    if not any(p in texto_lower for p in ("penha", "armação", "armacao")):
-        print("    IGNORADA: fora de Penha/Armação")
+    if not any(p in texto_lower for p in regiao["palavras_regiao"]):
+        print(f"    IGNORADA: fora de {regiao['bairro']}/{regiao['cidade']}")
         return None
 
     if menciona_outra_uf(texto):
@@ -608,13 +641,19 @@ def processar_resultado(resultado, busca_tipo):
         return None
 
     dados = validar_dados(dados, tipo)
+
+    preco_max = regiao.get("preco_max")
+    if preco_max and dados.get("preco") and dados["preco"] > preco_max:
+        print(f"    IGNORADA: acima do valor máximo da região (R$ {preco_max})")
+        return None
+
     qualidade = calcular_qualidade(dados, veio_jsonld)
 
     if dados.get("preco") is None and dados.get("area_m2") is None:
         print("    IGNORADA: sem preço ou área")
         return None
 
-    bairro = "Armação" if ("armação" in texto_lower or "armacao" in texto_lower) else None
+    bairro = regiao["bairro"] if any(p in texto_lower for p in regiao["palavras_bairro"]) else None
 
     return {
         "url": url,
@@ -628,6 +667,7 @@ def processar_resultado(resultado, busca_tipo):
         "garagens": dados.get("garagens"),
         "endereco": dados.get("endereco"),
         "bairro": bairro,
+        "cidade": regiao["cidade"],
         "descricao": resumo[:3000],
         "qualidade_dados": qualidade,
         "ativo": True,
@@ -654,9 +694,10 @@ def gerar_observacao_ia(imovel):
     if imovel.get("preco") and imovel.get("area_m2"):
         valor_m2 = round(imovel["preco"] / imovel["area_m2"])
 
+    local = imovel.get("bairro") or "(bairro não confirmado)"
     prompt = (
-        "Você avalia anúncios de imóveis à venda no bairro Armação, "
-        "Penha/SC. Dados do imóvel:\n"
+        f"Você avalia anúncios de imóveis à venda no bairro {local}, "
+        f"{imovel.get('cidade')}/SC. Dados do imóvel:\n"
         f"- Tipo: {imovel.get('tipo')}\n"
         f"- Preço: R$ {imovel.get('preco')}\n"
         f"- Área: {imovel.get('area_m2')} m²\n"
@@ -843,6 +884,7 @@ def validar_configuracao():
 
 def mostrar_imovel(imovel):
     print(f"    Tipo: {imovel.get('tipo')}")
+    print(f"    Cidade/Bairro: {imovel.get('cidade')} / {imovel.get('bairro')}")
     print(f"    Preço: {imovel.get('preco')}")
     print(f"    Área: {imovel.get('area_m2')}")
     print(f"    Quartos: {imovel.get('quartos')}")
@@ -856,8 +898,9 @@ def main():
     validar_configuracao()
 
     print("=" * 70)
-    print("RADAR DE IMÓVEIS - PENHA / ARMAÇÃO")
-    print("VERSÃO 7")
+    print("RADAR DE IMÓVEIS")
+    print("VERSÃO 8")
+    print(", ".join(f"{r['bairro']}/{r['cidade']}" for r in REGIOES))
     print("=" * 70)
 
     if os.getenv("LIMPAR_TABELA_ANTES", "").lower() == "true":
@@ -866,12 +909,12 @@ def main():
     urls_processadas = set()
     analisados = salvos = ignorados = 0
 
-    for tipo, consulta, dominio in BUSCAS:
+    for tipo, consulta, dominio, regiao in BUSCAS:
         query = f"{consulta} site:{dominio}"
 
         print()
         print("=" * 70)
-        print(f"BUSCANDO: {tipo}")
+        print(f"BUSCANDO: {tipo} — {regiao['bairro']}, {regiao['cidade']}")
         print(f"SITE: {dominio}")
         print("=" * 70)
 
@@ -895,7 +938,7 @@ def main():
             print(f"    Analisando: {resultado.get('title') or url}")
 
             try:
-                imovel = processar_resultado(resultado, tipo)
+                imovel = processar_resultado(resultado, tipo, regiao)
             except Exception as e:
                 print(f"    ERRO inesperado processando resultado: {e}")
                 ignorados += 1

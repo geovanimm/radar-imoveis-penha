@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <title>Radar de Imóveis - Armação</title>
+  <title>Radar de Imóveis</title>
 
   <style>
     * {
@@ -154,7 +154,7 @@
 
 <header>
   <h1>🏠 Radar de Imóveis</h1>
-  <p>Armação — Penha/SC</p>
+  <p>Armação (Penha) · Carijós (Indaial) — SC</p>
 </header>
 
 <div class="container">
@@ -190,6 +190,12 @@
       <option value="">Todos os tipos</option>
       <option value="Apartamento">Apartamento</option>
       <option value="Casa">Casa</option>
+    </select>
+
+    <select id="cidade">
+      <option value="">Todas as cidades</option>
+      <option value="Penha">Penha</option>
+      <option value="Indaial">Indaial</option>
     </select>
 
   </div>
@@ -297,6 +303,9 @@ function mostrarImoveis() {
   const tipo =
     document.getElementById("tipo").value;
 
+  const cidade =
+    document.getElementById("cidade").value;
+
   const filtrados =
     imoveis.filter(imovel => {
 
@@ -313,7 +322,12 @@ function mostrarImoveis() {
           .toLowerCase()
           .includes(tipo.toLowerCase());
 
-      return correspondeBusca && correspondeTipo;
+      const correspondeCidade =
+        !cidade ||
+        (imovel.cidade || "")
+          .toLowerCase() === cidade.toLowerCase();
+
+      return correspondeBusca && correspondeTipo && correspondeCidade;
 
     });
 
@@ -385,8 +399,8 @@ function mostrarImoveis() {
           }
 
           ${
-            imovel.bairro
-              ? `📍 ${imovel.bairro}`
+            imovel.bairro || imovel.cidade
+              ? `📍 ${[imovel.bairro, imovel.cidade].filter(Boolean).join(", ")}`
               : ""
           }
 
@@ -428,6 +442,10 @@ document
 
 document
   .getElementById("tipo")
+  .addEventListener("change", mostrarImoveis);
+
+document
+  .getElementById("cidade")
   .addEventListener("change", mostrarImoveis);
 
 
