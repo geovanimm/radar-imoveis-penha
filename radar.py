@@ -70,22 +70,6 @@ REGIOES = [
             "imobiliariabeatriz.com.br",
         ],
     },
-    {
-        "cidade": "Indaial",
-        "bairro": "Carijós",
-        "preco_max": None,
-        "palavras_regiao": ["indaial", "carijós", "carijos"],
-        "palavras_bairro": ["carijós", "carijos"],
-        "sites": [
-            "mauroimoveis.imb.br",
-            "schorkimoveis.com.br",
-            "imobiliariahoje.com.br",
-            "imobiliariamapa.com.br",
-            "mettaimobi.com.br",
-            "liderimobiliaria.net",
-            "shsimoveis.com",
-        ],
-    },
 ]
 
 TIPOS_QUERY = {
@@ -217,12 +201,6 @@ FONTES_POR_DOMINIO = {
     "solimoveis": "Sol Imóveis",
     "praiaalegreimoveis": "Praia Alegre Imóveis",
     "imobiliariabeatriz": "Imobiliária Beatriz",
-    "mauroimoveis": "Mauro Imóveis",
-    "schorkimoveis": "Schork Imóveis",
-    "imobiliariahoje": "Imobiliária Hoje",
-    "imobiliariamapa": "Mapa Imobiliária",
-    "mettaimobi": "Metta Negócios Imobiliários",
-    "liderimobiliaria": "Líder Imobiliária",
 }
 
 
