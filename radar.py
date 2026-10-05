@@ -70,6 +70,22 @@ REGIOES = [
             "imobiliariabeatriz.com.br",
         ],
     },
+    {
+        "cidade": "Florianópolis",
+        "bairro": "Campeche",
+        "preco_max": 500_000,
+        "palavras_regiao": ["florianópolis", "florianopolis", "campeche"],
+        "palavras_bairro": ["campeche"],
+        "sites": [
+            "campechesulimoveis.com.br",
+            "unikimoveis.com.br",
+            "imobcampeche.com.br",
+            "habiflex.com.br",
+            "lucatoimoveisfloripa.com.br",
+            "ikazaimoveis.com.br",
+            "feelinimoveis.com.br",
+        ],
+    },
 ]
 
 TIPOS_QUERY = {
@@ -201,6 +217,13 @@ FONTES_POR_DOMINIO = {
     "solimoveis": "Sol Imóveis",
     "praiaalegreimoveis": "Praia Alegre Imóveis",
     "imobiliariabeatriz": "Imobiliária Beatriz",
+    "campechesulimoveis": "Campeche Sul Imóveis",
+    "unikimoveis": "UNIK Imóveis",
+    "imobcampeche": "Imob Campeche",
+    "habiflex": "Habiflex",
+    "lucatoimoveisfloripa": "Lucato Imóveis Floripa",
+    "ikazaimoveis": "Imobiliária Ikaza",
+    "feelinimoveis": "Feelin Imóveis",
 }
 
 
